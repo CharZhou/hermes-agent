@@ -1602,6 +1602,7 @@ class GatewaySlashCommandsMixin:
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
+                            "request_overrides": dict(getattr(result, "request_overrides", None) or {}),
                         }
 
                         # Write-through the non-secret parts to the session
@@ -1850,6 +1851,7 @@ class GatewaySlashCommandsMixin:
                 "api_key": result.api_key,
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
+                "request_overrides": dict(getattr(result, "request_overrides", None) or {}),
             }
 
             # Write-through the non-secret parts (model/provider/base_url) to
