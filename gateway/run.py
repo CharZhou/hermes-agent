@@ -1761,6 +1761,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    _delivery_metadata_for_event,
     _reply_anchor_for_event,
     merge_pending_message_event,
 )
@@ -11342,6 +11343,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                delivery_metadata=_delivery_metadata_for_event(event),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -11867,11 +11869,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
+                _already_sent_metadata = _delivery_metadata_for_event(
+                    event,
+                    self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                )
                 if response:
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
                         await self._deliver_media_from_response(
-                            response, event, _media_adapter,
+                            response, event, _media_adapter, metadata=_already_sent_metadata,
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -11884,7 +11890,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await _foot_adapter.send(
                                 source.chat_id,
                                 _footer_line,
-                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                                metadata=_already_sent_metadata,
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
@@ -12914,6 +12920,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         response: str,
         event: MessageEvent,
         adapter,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Extract MEDIA: tags and local file paths from a response and deliver them.
 
@@ -12946,7 +12953,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             local_files, _ = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            _thread_meta = (
+                metadata
+                if metadata is not None
+                else self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            )
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -16244,6 +16255,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
+        delivery_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -16340,6 +16352,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        if delivery_metadata:
+            merged_metadata = dict(_thread_metadata) if _thread_metadata else {}
+            merged_metadata.update(delivery_metadata)
+            _thread_metadata = merged_metadata
 
         if _streaming_enabled:
             try:
@@ -16548,6 +16564,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        delivery_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -16566,6 +16583,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                delivery_metadata=delivery_metadata,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -16577,6 +16595,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                delivery_metadata=delivery_metadata,
             )
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
@@ -16609,6 +16628,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        delivery_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -16633,6 +16653,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
+                delivery_metadata=delivery_metadata,
             )
 
         from run_agent import AIAgent
@@ -17534,6 +17555,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             }
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+        if delivery_metadata:
+            _merged_status_metadata = dict(_status_thread_metadata) if _status_thread_metadata else {}
+            _merged_status_metadata.update(delivery_metadata)
+            _status_thread_metadata = _merged_status_metadata
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -19505,6 +19530,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    next_delivery_metadata = _delivery_metadata_for_event(pending_event)
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -19546,6 +19572,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    delivery_metadata=next_delivery_metadata,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
@@ -19662,12 +19689,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sc_msg_id = _sc.message_id
                 if _sc_msg_id:
                     try:
-                        await _sc.adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=_sc_msg_id,
-                            content=response["final_response"],
-                            finalize=True,
-                        )
+                        _edit_kwargs = {
+                            "chat_id": source.chat_id,
+                            "message_id": _sc_msg_id,
+                            "content": response["final_response"],
+                            "finalize": True,
+                        }
+                        try:
+                            _edit_sig = inspect.signature(_sc.adapter.edit_message)
+                        except (TypeError, ValueError):
+                            _edit_sig = None
+                        if _edit_sig is not None and "metadata" in _edit_sig.parameters:
+                            _edit_kwargs["metadata"] = _status_thread_metadata
+                        await _sc.adapter.edit_message(**_edit_kwargs)
                         response["already_sent"] = True
                         logger.info(
                             "Edited streamed message %s for session %s to include plugin-transformed content.",
