@@ -1,0 +1,103 @@
+name: Docker Build and Publish (Fork)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ${{ vars.FORK_IMAGE_NAME || format('ghcr.io/{0}/hermes-agent', github.repository_owner) }}
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Normalize image name
+        id: image
+        shell: bash
+        run: |
+          image_name_lower="$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          echo "image_name=${image_name_lower}" >> "$GITHUB_OUTPUT"
+
+      # The fork ships no image overlays: lazy optional backends (feishu,
+      # etc.) install themselves at first use into the durable data volume
+      # via HERMES_LAZY_INSTALL_TARGET, which the upstream Dockerfile sets.
+      - name: Build image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          platforms: linux/amd64
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          tags: ${{ steps.image.outputs.image_name }}:test
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+
+      - name: Ensure /tmp/hermes-test is hermes-writable
+        shell: bash
+        run: |
+          mkdir -p /tmp/hermes-test
+          sudo chown -R 10000:10000 /tmp/hermes-test
+
+      # Upstream moved its smoke checks to tests/docker/test_smoke.py; the
+      # publish job here has no Python test env, so run the same two
+      # entrypoint checks inline.
+      - name: Smoke test image
+        shell: bash
+        run: |
+          docker run --rm \
+            -v /tmp/hermes-test:/opt/data \
+            "${{ steps.image.outputs.image_name }}:test" --help
+
+          docker run --rm \
+            -v /tmp/hermes-test:/opt/data \
+            "${{ steps.image.outputs.image_name }}:test" dashboard --help
+
+      - name: Compute image tags
+        id: tags
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA::12}"
+          short_sha6="${GITHUB_SHA::6}"
+          {
+            echo "tag_main=${IMAGE_NAME_LOWER}:main"
+            echo "tag_latest=${IMAGE_NAME_LOWER}:latest"
+            echo "tag_sha=${IMAGE_NAME_LOWER}:sha-${short_sha}"
+            echo "tag_sha_short=${IMAGE_NAME_LOWER}:${short_sha6}"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          IMAGE_NAME_LOWER: ${{ steps.image.outputs.image_name }}
+
+      - name: Tag and push image
+        shell: bash
+        run: |
+          for tag in \
+            "${{ steps.tags.outputs.tag_main }}" \
+            "${{ steps.tags.outputs.tag_latest }}" \
+            "${{ steps.tags.outputs.tag_sha }}" \
+            "${{ steps.tags.outputs.tag_sha_short }}"; do
+            docker tag "${{ steps.image.outputs.image_name }}:test" "${tag}"
+            docker push "${tag}"
+          done
