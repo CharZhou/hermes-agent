@@ -1,4 +1,5 @@
 import json
+import sys
 from types import SimpleNamespace
 
 
@@ -122,3 +123,65 @@ def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path
 
     assert seen_task_ids == ["plugin-task"]
     assert result["agent_visible_image"] == "/home/remote/.hermes/cache/images/plugin.png"
+
+
+def test_openai_edit_uses_configured_client_overrides(monkeypatch, tmp_path):
+    from plugins.image_gen.openai import OpenAIImageGenProvider
+    import plugins.image_gen.openai as openai_provider
+
+    client_kwargs = []
+    generate_calls = []
+    edit_calls = []
+
+    class FakeImages:
+        def generate(self, **kwargs):
+            generate_calls.append(kwargs)
+            return SimpleNamespace(data=[SimpleNamespace(b64_json="generated")])
+
+        def edit(self, **kwargs):
+            edit_calls.append(kwargs)
+            return SimpleNamespace(data=[SimpleNamespace(b64_json="edited")])
+
+    class FakeOpenAIClient:
+        def __init__(self, **kwargs):
+            client_kwargs.append(kwargs)
+            self.images = FakeImages()
+
+    fake_openai = SimpleNamespace(OpenAI=FakeOpenAIClient)
+
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setenv("OPENAI_IMAGE_KEY", "custom-image-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "image_gen": {
+                "openai": {
+                    "key_env": "OPENAI_IMAGE_KEY",
+                    "base_url": "https://proxy.example/v1/",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        openai_provider,
+        "save_b64_image",
+        lambda b64, prefix: tmp_path / f"{prefix}.png",
+    )
+
+    result = OpenAIImageGenProvider().generate(
+        "make the image brighter",
+        aspect_ratio="square",
+        image_url="data:image/png;base64,aW1hZ2U=",
+    )
+
+    assert result["success"] is True
+    assert result["modality"] == "image"
+    assert result["image"] == str(tmp_path / "openai_gpt-image-2-medium.png")
+    assert client_kwargs == [
+        {"api_key": "custom-image-key", "base_url": "https://proxy.example/v1"}
+    ]
+    assert generate_calls == []
+    assert len(edit_calls) == 1
+    assert edit_calls[0]["prompt"] == "make the image brighter"
+    assert edit_calls[0]["image"].name == "image.png"
