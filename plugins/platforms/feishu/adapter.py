@@ -48,6 +48,7 @@ user is seen through different apps in the future.
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import concurrent.futures
 import hashlib
@@ -164,6 +165,16 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_FEISHU_MENTION_TARGETS_METADATA_KEY = "feishu_mention_targets"
+_FEISHU_MENTION_REGISTRY_FILENAME = "feishu_mention_targets.json"
+_FEISHU_MENTION_REGISTRY_VERSION = 1
+_FEISHU_MENTION_REGISTRY_MAX_CHATS = 1000
+_FEISHU_MENTION_REGISTRY_MAX_TARGETS_PER_CHAT = 200
+_LITERAL_NATIVE_AT_TAG_RE = re.compile(r'<at\s+user_id="([^"]+)"></at>')
+_NATIVE_AT_TOKEN_NONCE = uuid.uuid4().hex
+_NATIVE_AT_TOKEN_RE = re.compile(
+    rf"__HERMES_FEISHU_AT_{_NATIVE_AT_TOKEN_NONCE}_([A-Za-z0-9_-]+)__"
+)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -549,6 +560,46 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _encode_native_at_token(open_id: str) -> str:
+    encoded = base64.urlsafe_b64encode(str(open_id).encode("utf-8")).decode("ascii").rstrip("=")
+    return f"__HERMES_FEISHU_AT_{_NATIVE_AT_TOKEN_NONCE}_{encoded}__"
+
+
+def _decode_native_at_token(encoded: str) -> str:
+    try:
+        padded = encoded + ("=" * (-len(encoded) % 4))
+        return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def _escape_literal_native_at_tags(content: str) -> str:
+    if not content:
+        return content
+    return _LITERAL_NATIVE_AT_TAG_RE.sub(
+        lambda match: match.group(0).replace("<", "&lt;").replace(">", "&gt;"),
+        content,
+    )
+
+
+def _render_native_at_tokens_as_text(content: str) -> str:
+    if not content:
+        return content
+
+    def _replace(match: re.Match[str]) -> str:
+        open_id = _decode_native_at_token(match.group(1))
+        if not open_id:
+            return match.group(0)
+        return f'<at user_id="{open_id}"></at>'
+
+    return _NATIVE_AT_TOKEN_RE.sub(_replace, content)
+
+
+def _render_plain_text_payload_content(content: str) -> str:
+    escaped = _escape_literal_native_at_tags(content)
+    return _render_native_at_tokens_as_text(escaped)
+
+
 def _build_markdown_post_payload(content: str) -> str:
     rows = _build_markdown_post_rows(content)
     return json.dumps(
@@ -559,6 +610,23 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _build_markdown_post_row(content: str) -> List[Dict[str, str]]:
+    row: List[Dict[str, str]] = []
+    position = 0
+    for match in _NATIVE_AT_TOKEN_RE.finditer(content):
+        if match.start() > position:
+            row.append({"tag": "md", "text": _escape_literal_native_at_tags(content[position:match.start()])})
+        open_id = _decode_native_at_token(match.group(1))
+        if open_id:
+            row.append({"tag": "at", "user_id": open_id})
+        else:
+            row.append({"tag": "md", "text": match.group(0)})
+        position = match.end()
+    if position < len(content):
+        row.append({"tag": "md", "text": _escape_literal_native_at_tags(content[position:])})
+    return row or [{"tag": "md", "text": ""}]
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
@@ -572,7 +640,7 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     if not content:
         return [[{"tag": "md", "text": ""}]]
     if "```" not in content:
-        return [[{"tag": "md", "text": content}]]
+        return [_build_markdown_post_row(content)]
 
     rows: List[List[Dict[str, str]]] = []
     current: List[str] = []
@@ -584,7 +652,10 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
             return
         segment = "\n".join(current)
         if segment.strip():
-            rows.append([{"tag": "md", "text": segment}])
+            if _MARKDOWN_FENCE_OPEN_RE.match(segment.strip().splitlines()[0]):
+                rows.append([{"tag": "md", "text": segment}])
+            else:
+                rows.append(_build_markdown_post_row(segment))
         current = []
 
     for raw_line in content.splitlines():
@@ -1210,10 +1281,11 @@ def _build_mentions_map(
             continue
         open_id, user_id = _extract_mention_ids(mention)
         name = str(getattr(mention, "name", "") or "").strip()
+        is_self = bot.matches(open_id=open_id, user_id=user_id, name=name)
         result[key] = FeishuMentionRef(
             name=name,
             open_id=open_id,
-            is_self=bot.matches(open_id=open_id, user_id=user_id, name=name),
+            is_self=is_self,
         )
     return result
 
@@ -1235,6 +1307,66 @@ def _build_mention_hint(mentions: Sequence[FeishuMentionRef]) -> str:
         else:
             parts.append(ref.name or "unknown")
     return f"[Mentioned: {', '.join(parts)}]" if parts else ""
+
+
+def _build_mention_targets(mentions: Sequence[FeishuMentionRef]) -> Dict[str, str]:
+    targets: Dict[str, str] = {}
+    for ref in mentions:
+        if ref.is_self or ref.is_all:
+            continue
+        name = (ref.name or "").strip()
+        open_id = (ref.open_id or "").strip()
+        if name and open_id:
+            targets[name] = open_id
+    return targets
+
+
+def _compile_feishu_mentions(
+    content: str,
+    *,
+    mention_targets: Optional[Dict[str, str]] = None,
+) -> str:
+    if not content or not mention_targets:
+        return content
+
+    sorted_targets = sorted(
+        (
+            (str(name).strip(), str(open_id).strip())
+            for name, open_id in mention_targets.items()
+            if str(name or "").strip() and str(open_id or "").strip()
+        ),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    if not sorted_targets:
+        return content
+
+    def _compile_line(line: str) -> str:
+        compiled_line = line
+        for name, open_id in sorted_targets:
+            boundary = r"(?=$|[\s.,;:!?、，。；：！？(){}\[\]<>\"'`])"
+            pattern = re.compile(rf"^(?P<indent>[ \t]*)@{re.escape(name)}{boundary}")
+            compiled_line = pattern.sub(
+                lambda match, open_id=open_id: f"{match.group('indent')}{_encode_native_at_token(open_id)}",
+                compiled_line,
+            )
+        return compiled_line
+
+    parts: List[str] = []
+    in_code_block = False
+    for line in content.splitlines(keepends=True):
+        stripped_line = line.strip()
+        is_fence = bool(
+            _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
+            if in_code_block
+            else _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
+        )
+        if is_fence:
+            parts.append(line)
+            in_code_block = not in_code_block
+            continue
+        parts.append(line if in_code_block else _compile_line(line))
+    return "".join(parts)
 
 
 def _strip_edge_self_mentions(
@@ -1452,6 +1584,14 @@ class FeishuAdapter(BasePlatformAdapter):
         self._seen_message_order: List[str] = []
         self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
         self._dedup_lock = threading.Lock()
+        self._mention_registry_path: Optional[Path] = (
+            get_hermes_home() / _FEISHU_MENTION_REGISTRY_FILENAME
+        )
+        self._mention_registry_lock = threading.Lock()
+        self._mention_registry: Dict[str, Any] = {
+            "version": _FEISHU_MENTION_REGISTRY_VERSION,
+            "chats": {},
+        }
         self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
         self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
@@ -1486,6 +1626,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
         self._load_seen_message_ids()
+        self._load_mention_registry()
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
@@ -1843,7 +1984,13 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        mention_targets = self._mention_targets_for_chat(chat_id)
+        raw_targets = (metadata or {}).get(_FEISHU_MENTION_TARGETS_METADATA_KEY)
+        if isinstance(raw_targets, dict):
+            mention_targets.update(raw_targets)
+        mention_targets = mention_targets or None
         formatted = self.format_message(content)
+        formatted = _compile_feishu_mentions(formatted, mention_targets=mention_targets)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
@@ -1865,7 +2012,14 @@ class FeishuAdapter(BasePlatformAdapter):
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        payload=json.dumps(
+                            {
+                                "text": _render_plain_text_payload_content(
+                                    _strip_markdown_to_plain_text(chunk)
+                                )
+                            },
+                            ensure_ascii=False,
+                        ),
                         reply_to=reply_to,
                         metadata=metadata,
                     )
@@ -1878,7 +2032,14 @@ class FeishuAdapter(BasePlatformAdapter):
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        payload=json.dumps(
+                            {
+                                "text": _render_plain_text_payload_content(
+                                    _strip_markdown_to_plain_text(chunk)
+                                )
+                            },
+                            ensure_ascii=False,
+                        ),
                         reply_to=reply_to,
                         metadata=metadata,
                     )
@@ -1896,12 +2057,19 @@ class FeishuAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        mention_targets = self._mention_targets_for_chat(chat_id)
+        raw_targets = (metadata or {}).get(_FEISHU_MENTION_TARGETS_METADATA_KEY)
+        if isinstance(raw_targets, dict):
+            mention_targets.update(raw_targets)
+        mention_targets = mention_targets or None
         content = self.format_message(content)
+        content = _compile_feishu_mentions(content, mention_targets=mention_targets)
         try:
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
@@ -1912,7 +2080,14 @@ class FeishuAdapter(BasePlatformAdapter):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
-                    content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
+                    content=json.dumps(
+                        {
+                            "text": _render_plain_text_payload_content(
+                                _strip_markdown_to_plain_text(content)
+                            )
+                        },
+                        ensure_ascii=False,
+                    ),
                 )
                 fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
                 fallback_response = await self._run_blocking(self._client.im.v1.message.update, fallback_request)
@@ -3196,6 +3371,17 @@ class FeishuAdapter(BasePlatformAdapter):
             hint = _build_mention_hint(mentions)
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
+        chat_id = getattr(message, "chat_id", "") or ""
+        current_mention_targets = _build_mention_targets(mentions)
+        if current_mention_targets:
+            self._update_mention_registry(chat_id, current_mention_targets)
+        mention_targets = self._mention_targets_for_chat(chat_id)
+        mention_targets.update(current_mention_targets)
+        event_metadata = (
+            {"delivery_metadata": {_FEISHU_MENTION_TARGETS_METADATA_KEY: mention_targets}}
+            if mention_targets
+            else {}
+        )
 
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
         reply_to_message_id = (
@@ -3224,7 +3410,6 @@ class FeishuAdapter(BasePlatformAdapter):
             len(media_urls),
         )
 
-        chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
         source = self.build_source(
@@ -3248,6 +3433,7 @@ class FeishuAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
+            metadata=event_metadata,
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
@@ -4398,6 +4584,207 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Failed to hydrate bot name from application info", exc_info=True)
 
     # =========================================================================
+    # Mention registry — per-chat open_id cache (persistent)
+    # =========================================================================
+
+    def _ensure_mention_registry_state(self) -> None:
+        if not hasattr(self, "_mention_registry_lock"):
+            self._mention_registry_lock = threading.Lock()
+        if not hasattr(self, "_mention_registry_path"):
+            self._mention_registry_path = None
+        if not hasattr(self, "_mention_registry"):
+            self._mention_registry = {
+                "version": _FEISHU_MENTION_REGISTRY_VERSION,
+                "chats": {},
+            }
+
+    @staticmethod
+    def _normalize_mention_registry(raw: Any) -> Dict[str, Any]:
+        registry: Dict[str, Any] = {
+            "version": _FEISHU_MENTION_REGISTRY_VERSION,
+            "chats": {},
+        }
+        if not isinstance(raw, dict):
+            return registry
+        raw_chats = raw.get("chats")
+        if not isinstance(raw_chats, dict):
+            return registry
+
+        for raw_chat_id, raw_chat in raw_chats.items():
+            chat_id = str(raw_chat_id or "").strip()
+            if not chat_id or not isinstance(raw_chat, dict):
+                continue
+            raw_targets = raw_chat.get("targets", raw_chat)
+            if not isinstance(raw_targets, dict):
+                continue
+            targets: Dict[str, Dict[str, Any]] = {}
+            for raw_name, raw_entry in raw_targets.items():
+                name = str(raw_name or "").strip()
+                if not name:
+                    continue
+                if isinstance(raw_entry, str):
+                    entry = {
+                        "open_id": raw_entry.strip(),
+                        "updated_at": 0.0,
+                        "conflict": False,
+                    }
+                elif isinstance(raw_entry, dict):
+                    entry = {
+                        "open_id": str(raw_entry.get("open_id") or "").strip(),
+                        "updated_at": float(raw_entry.get("updated_at") or 0.0),
+                        "conflict": bool(raw_entry.get("conflict")),
+                    }
+                    open_ids = raw_entry.get("open_ids")
+                    if isinstance(open_ids, list):
+                        entry["open_ids"] = [
+                            str(item).strip() for item in open_ids if str(item).strip()
+                        ]
+                else:
+                    continue
+                if entry.get("open_id") or entry.get("conflict"):
+                    targets[name] = entry
+            if targets:
+                registry["chats"][chat_id] = {
+                    "targets": targets,
+                    "updated_at": float(raw_chat.get("updated_at") or 0.0),
+                }
+        return registry
+
+    def _load_mention_registry(self) -> None:
+        self._ensure_mention_registry_state()
+        path = self._mention_registry_path
+        if path is None:
+            return
+        try:
+            if not path.exists():
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            self._mention_registry = self._normalize_mention_registry(raw)
+        except (OSError, json.JSONDecodeError, ValueError):
+            logger.warning("[Feishu] Failed to load mention registry from %s", path, exc_info=True)
+            self._mention_registry = {
+                "version": _FEISHU_MENTION_REGISTRY_VERSION,
+                "chats": {},
+            }
+
+    def _persist_mention_registry_locked(self) -> None:
+        path = self._mention_registry_path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_json_write(path, self._mention_registry, indent=None)
+        except OSError:
+            logger.warning("[Feishu] Failed to persist mention registry to %s", path, exc_info=True)
+
+    def _prune_mention_registry_locked(self) -> None:
+        chats = self._mention_registry.setdefault("chats", {})
+        if len(chats) > _FEISHU_MENTION_REGISTRY_MAX_CHATS:
+            stale_chat_ids = sorted(
+                chats,
+                key=lambda chat_id: float((chats.get(chat_id) or {}).get("updated_at") or 0.0),
+            )[: len(chats) - _FEISHU_MENTION_REGISTRY_MAX_CHATS]
+            for chat_id in stale_chat_ids:
+                chats.pop(chat_id, None)
+
+        for chat in chats.values():
+            if not isinstance(chat, dict):
+                continue
+            targets = chat.get("targets")
+            if not isinstance(targets, dict):
+                continue
+            if len(targets) <= _FEISHU_MENTION_REGISTRY_MAX_TARGETS_PER_CHAT:
+                continue
+            stale_names = sorted(
+                targets,
+                key=lambda name: float((targets.get(name) or {}).get("updated_at") or 0.0),
+            )[: len(targets) - _FEISHU_MENTION_REGISTRY_MAX_TARGETS_PER_CHAT]
+            for name in stale_names:
+                targets.pop(name, None)
+
+    def _update_mention_registry(self, chat_id: str, targets: Dict[str, str]) -> None:
+        chat_key = str(chat_id or "").strip()
+        if not chat_key or not targets:
+            return
+        self._ensure_mention_registry_state()
+        now = time.time()
+        with self._mention_registry_lock:
+            chats = self._mention_registry.setdefault("chats", {})
+            chat = chats.setdefault(chat_key, {"targets": {}, "updated_at": now})
+            chat["updated_at"] = now
+            chat_targets = chat.setdefault("targets", {})
+
+            for raw_name, raw_open_id in targets.items():
+                name = str(raw_name or "").strip()
+                open_id = str(raw_open_id or "").strip()
+                if not name or not open_id:
+                    continue
+                entry = chat_targets.get(name)
+                if not isinstance(entry, dict):
+                    chat_targets[name] = {
+                        "open_id": open_id,
+                        "updated_at": now,
+                        "conflict": False,
+                    }
+                    continue
+
+                known_ids = {
+                    item for item in entry.get("open_ids", []) if isinstance(item, str) and item
+                }
+                existing_open_id = str(entry.get("open_id") or "").strip()
+                if existing_open_id:
+                    known_ids.add(existing_open_id)
+                if entry.get("conflict"):
+                    known_ids.add(open_id)
+                    entry["open_ids"] = sorted(known_ids)
+                    entry["updated_at"] = now
+                    continue
+                if existing_open_id and existing_open_id != open_id:
+                    known_ids.add(open_id)
+                    logger.warning(
+                        "[Feishu] Mention name conflict in chat %s for %r: %s",
+                        chat_key,
+                        name,
+                        sorted(known_ids),
+                    )
+                    chat_targets[name] = {
+                        "open_id": "",
+                        "open_ids": sorted(known_ids),
+                        "updated_at": now,
+                        "conflict": True,
+                    }
+                    continue
+                chat_targets[name] = {
+                    "open_id": open_id,
+                    "updated_at": now,
+                    "conflict": False,
+                }
+
+            self._prune_mention_registry_locked()
+            self._persist_mention_registry_locked()
+
+    def _mention_targets_for_chat(self, chat_id: str) -> Dict[str, str]:
+        chat_key = str(chat_id or "").strip()
+        if not chat_key:
+            return {}
+        self._ensure_mention_registry_state()
+        with self._mention_registry_lock:
+            chat = self._mention_registry.get("chats", {}).get(chat_key, {})
+            targets = chat.get("targets", {}) if isinstance(chat, dict) else {}
+            if not isinstance(targets, dict):
+                return {}
+            result: Dict[str, str] = {}
+            for raw_name, raw_entry in targets.items():
+                if not isinstance(raw_entry, dict) or raw_entry.get("conflict"):
+                    continue
+                name = str(raw_name or "").strip()
+                open_id = str(raw_entry.get("open_id") or "").strip()
+                if name and open_id:
+                    result[name] = open_id
+            return result
+
+    # =========================================================================
     # Deduplication — seen message ID cache (persistent)
     # =========================================================================
 
@@ -4472,11 +4859,11 @@ class FeishuAdapter(BasePlatformAdapter):
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
+            text_payload = {"text": _render_plain_text_payload_content(content)}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
+        text_payload = {"text": _render_plain_text_payload_content(content)}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 
     async def _send_uploaded_file_message(

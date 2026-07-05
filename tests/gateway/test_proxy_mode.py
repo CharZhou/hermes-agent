@@ -1,11 +1,12 @@
 """Tests for gateway proxy mode — forwarding messages to a remote API server."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import Platform, StreamingConfig
-from gateway.platforms.base import resolve_proxy_url
+from gateway.platforms.base import MessageEvent, MessageType, resolve_proxy_url
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -203,6 +204,34 @@ class TestRunAgentProxyDispatch:
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
 
     @pytest.mark.asyncio
+    async def test_run_agent_forwards_delivery_metadata_to_proxy(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        source = _make_source(platform=Platform.FEISHU)
+        metadata = {"feishu_mention_targets": {"BotDemo": "ou_demo"}}
+
+        runner._run_agent_via_proxy = AsyncMock(
+            return_value={
+                "final_response": "ok",
+                "messages": [],
+                "api_calls": 1,
+                "tools": [],
+            }
+        )
+
+        await runner._run_agent(
+            message="hi",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="test-session-123",
+            delivery_metadata=metadata,
+        )
+
+        runner._run_agent_via_proxy.assert_called_once()
+        assert runner._run_agent_via_proxy.call_args.kwargs["delivery_metadata"] == metadata
+
+    @pytest.mark.asyncio
     async def test_run_agent_skips_proxy_when_not_configured(self, monkeypatch):
         monkeypatch.delenv("GATEWAY_PROXY_URL", raising=False)
         runner = _make_runner()
@@ -279,6 +308,66 @@ class TestRunAgentViaProxy:
 
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_stream_consumer_receives_delivery_metadata(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        runner.config.streaming.enabled = True
+        source = _make_source(platform=Platform.FEISHU)
+        metadata = {"feishu_mention_targets": {"BotDemo": "ou_demo"}}
+        captured = {}
+
+        class _Consumer:
+            def __init__(self, *, adapter, chat_id, config, metadata=None, **kwargs):
+                captured["adapter"] = adapter
+                captured["chat_id"] = chat_id
+                captured["metadata"] = metadata
+                captured["deltas"] = []
+
+            async def run(self):
+                captured["ran"] = True
+
+            def on_delta(self, content):
+                captured["deltas"].append(content)
+
+            def finish(self):
+                captured["finished"] = True
+
+        runner.adapters = {
+            Platform.FEISHU: SimpleNamespace(
+                SUPPORTS_MESSAGE_EDITING=True,
+                send_typing=AsyncMock(),
+            )
+        }
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"@BotDemo"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":" ok"}}]}\n\n'
+                "data: [DONE]\n\n"
+            ],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    with patch("gateway.stream_consumer.GatewayStreamConsumer", _Consumer):
+                        result = await runner._run_agent_via_proxy(
+                            message="hi",
+                            context_prompt="",
+                            history=[],
+                            source=source,
+                            session_id="session-abc",
+                            delivery_metadata=metadata,
+                        )
+
+        assert result["final_response"] == "@BotDemo ok"
+        assert captured["metadata"] == metadata
+        assert captured["deltas"] == ["@BotDemo", " ok"]
+        assert captured["finished"] is True
 
     @pytest.mark.asyncio
     async def test_handles_http_error(self, monkeypatch):
@@ -496,6 +585,61 @@ class TestRunAgentViaProxy:
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
         assert messages[0]["content"] == "hello"
+
+
+class TestPostStreamDeliveryMetadata:
+    @pytest.mark.asyncio
+    async def test_media_delivery_accepts_and_forwards_delivery_metadata(self, tmp_path):
+        runner = _make_runner()
+        source = _make_source(platform=Platform.FEISHU)
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="om_trigger",
+            metadata={
+                "delivery_metadata": {
+                    "feishu_mention_targets": {"BotDemo": "ou_demo"},
+                }
+            },
+        )
+        attachment = tmp_path / "artifact.txt"
+        attachment.write_text("hello", encoding="utf-8")
+        metadata = {
+            "reply_to_message_id": "om_trigger",
+            "feishu_mention_targets": {"BotDemo": "ou_demo"},
+        }
+
+        class _Adapter:
+            name = "feishu"
+            send_multiple_images = AsyncMock()
+            send_voice = AsyncMock()
+            send_video = AsyncMock()
+            send_document = AsyncMock()
+
+            def extract_media(self, _response):
+                return [(str(attachment), False)], ""
+
+            def extract_images(self, cleaned):
+                return [], cleaned
+
+            def extract_local_files(self, cleaned):
+                return [], cleaned
+
+        runner._reply_anchor_for_event = lambda _event: "om_trigger"
+        runner._thread_metadata_for_source = lambda _source, _anchor=None: {
+            "reply_to_message_id": "om_trigger",
+        }
+
+        await runner._deliver_media_from_response(
+            "MEDIA: artifact",
+            event,
+            _Adapter(),
+            metadata=metadata,
+        )
+
+        _Adapter.send_document.assert_awaited_once()
+        assert _Adapter.send_document.await_args.kwargs["metadata"] == metadata
 
 
 class TestEnvVarRegistration:
