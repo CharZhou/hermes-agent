@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
@@ -728,6 +729,10 @@ class TestMediaDeliveryPathValidation:
         # specifically cover recency trust re-enable it themselves.
         monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
 
+    def _set_hermes_home(self, monkeypatch, hermes_home):
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        return set_hermes_home_override(hermes_home)
+
     def test_allows_existing_file_inside_safe_root(self, tmp_path, monkeypatch):
         root = tmp_path / "media-cache"
         media_file = root / "voice.ogg"
@@ -889,6 +894,40 @@ class TestMediaDeliveryPathValidation:
 
         out = BasePlatformAdapter.filter_local_delivery_paths([str(fresh)])
         assert out == [str(fresh.resolve())]
+
+    def test_docker_workspace_media_path_translates_to_host_workspace(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        workspace = hermes_home / "sandboxes" / "docker" / "default" / "workspace"
+        image = workspace / "foo.png"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"fake image")
+        self._patch_roots(monkeypatch)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "1")
+        token = self._set_hermes_home(monkeypatch, hermes_home)
+
+        try:
+            assert BasePlatformAdapter.validate_media_delivery_path("/workspace/foo.png") == str(image.resolve())
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_docker_workspace_media_path_cannot_escape_workspace_via_dotdot(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        workspace = hermes_home / "sandboxes" / "docker" / "default" / "workspace"
+        docker_home = hermes_home / "sandboxes" / "docker" / "default" / "home"
+        secret = docker_home / "secret.png"
+        workspace.mkdir(parents=True)
+        secret.parent.mkdir(parents=True)
+        secret.write_bytes(b"secret")
+        self._patch_roots(monkeypatch)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "1")
+        token = self._set_hermes_home(monkeypatch, hermes_home)
+
+        try:
+            assert BasePlatformAdapter.validate_media_delivery_path("/workspace/../home/secret.png") is None
+        finally:
+            reset_hermes_home_override(token)
 
 
 class TestMediaDeliveryDefaultMode:
