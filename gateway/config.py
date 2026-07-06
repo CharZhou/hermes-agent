@@ -479,9 +479,11 @@ class PlatformConfig:
         if _typing is None:
             _typing = data.get("extra", {}).get("typing_indicator")
 
-        _reply_to_mode = data.get("reply_to_mode")
-        if _reply_to_mode is None:
-            _reply_to_mode = data.get("extra", {}).get("reply_to_mode")
+        extra_data = data.get("extra") if isinstance(data.get("extra"), dict) else {}
+        if "reply_to_mode" in data:
+            _reply_to_mode = data.get("reply_to_mode")
+        else:
+            _reply_to_mode = extra_data.get("reply_to_mode")
 
         channel_overrides: Dict[str, ChannelOverride] = {}
         raw_overrides = data.get("channel_overrides") or {}
@@ -1113,12 +1115,9 @@ def load_gateway_config() -> GatewayConfig:
                 # ``_merge_platform_map`` already merged it with the correct
                 # precedence, so re-applying it here would overwrite that.
                 if not _cfg_toplevel:
-                    for _src in (gateway_platforms, yaml_cfg.get("platforms")):
-                        if isinstance(_src, dict):
-                            _candidate = _src.get(plat.value)
-                            if isinstance(_candidate, dict):
-                                platform_cfg = _candidate
-                                break
+                    _candidate = platforms_data.get(plat.value)
+                    if isinstance(_candidate, dict):
+                        platform_cfg = _candidate
                 if not isinstance(platform_cfg, dict):
                     continue
                 # Collect bridgeable keys from this platform section

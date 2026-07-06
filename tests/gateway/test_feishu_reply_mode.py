@@ -26,6 +26,18 @@ def test_platform_config_reads_extra_reply_to_mode_when_top_level_absent():
     assert config.reply_to_mode == "off"
 
 
+def test_platform_config_top_level_none_does_not_read_extra_reply_to_mode():
+    config = PlatformConfig.from_dict(
+        {
+            "enabled": True,
+            "reply_to_mode": None,
+            "extra": {"reply_to_mode": "off"},
+        }
+    )
+
+    assert config.reply_to_mode == "first"
+
+
 def test_gateway_config_from_dict_keeps_platforms_feishu_reply_to_mode():
     config = GatewayConfig.from_dict(
         {
@@ -37,6 +49,33 @@ def test_gateway_config_from_dict_keeps_platforms_feishu_reply_to_mode():
             }
         }
     )
+
+    assert config.platforms[Platform.FEISHU].reply_to_mode == "off"
+
+
+def test_platforms_feishu_reply_to_mode_overrides_gateway_platforms(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "\n".join(
+            [
+                "gateway:",
+                "  platforms:",
+                "    feishu:",
+                "      reply_to_mode: first",
+                "platforms:",
+                "  feishu:",
+                "    reply_to_mode: off",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("FEISHU_APP_ID", raising=False)
+    monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
+
+    config = load_gateway_config()
 
     assert config.platforms[Platform.FEISHU].reply_to_mode == "off"
 
