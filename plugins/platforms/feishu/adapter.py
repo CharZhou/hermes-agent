@@ -1560,6 +1560,9 @@ class FeishuAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.FEISHU)
 
+        self._reply_to_mode = self._normalize_reply_to_mode(
+            getattr(config, "reply_to_mode", "first")
+        )
         self._settings = self._load_settings(config.extra or {})
         self._apply_settings(self._settings)
         self._client: Optional[Any] = None
@@ -1627,6 +1630,26 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
         self._load_seen_message_ids()
         self._load_mention_registry()
+
+    @staticmethod
+    def _normalize_reply_to_mode(value: Any) -> str:
+        if value is False:
+            return "off"
+        if value is None:
+            return "first"
+        normalized = str(value).strip().lower()
+        return normalized or "first"
+
+    def _reply_to_disabled(self) -> bool:
+        return self._normalize_reply_to_mode(getattr(self, "_reply_to_mode", "first")) == "off"
+
+    def _send_routing_metadata(self, metadata: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not metadata or not self._reply_to_disabled():
+            return metadata
+        routing_metadata = dict(metadata)
+        routing_metadata.pop("thread_id", None)
+        routing_metadata.pop("reply_to_message_id", None)
+        return routing_metadata or None
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
@@ -3390,6 +3413,9 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None)
             or None
         )
+        if self._reply_to_disabled():
+            thread_id = None
+            reply_to_message_id = None
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
 
         sender_primary = (
@@ -4939,10 +4965,11 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
-        effective_reply_to = reply_to
-        if not effective_reply_to and metadata and metadata.get("thread_id"):
-            effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        routing_metadata = self._send_routing_metadata(metadata)
+        effective_reply_to = None if self._reply_to_disabled() else reply_to
+        if not effective_reply_to and routing_metadata and routing_metadata.get("thread_id"):
+            effective_reply_to = routing_metadata.get("reply_to_message_id")
+        reply_in_thread = bool((routing_metadata or {}).get("thread_id"))
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
@@ -4956,7 +4983,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # For topic/thread messages that fell back from reply→create, use
         # thread_id as receive_id so the message lands in the topic instead of
         # the main chat.
-        _thread_id = (metadata or {}).get("thread_id")
+        _thread_id = (routing_metadata or {}).get("thread_id")
         if _thread_id:
             body = self._build_create_message_body(
                 receive_id=_thread_id,
@@ -5107,7 +5134,8 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         last_error: Optional[Exception] = None
-        active_reply_to = reply_to
+        routing_metadata = self._send_routing_metadata(metadata)
+        active_reply_to = None if self._reply_to_disabled() else reply_to
         for attempt in range(_FEISHU_SEND_ATTEMPTS):
             try:
                 response = await self._send_raw_message(
@@ -5115,19 +5143,19 @@ class FeishuAdapter(BasePlatformAdapter):
                     msg_type=msg_type,
                     payload=payload,
                     reply_to=active_reply_to,
-                    metadata=metadata,
+                    metadata=routing_metadata,
                 )
                 # If replying to a message failed because it was withdrawn or not found,
                 # fall back to posting a new message directly to the chat.
                 if active_reply_to and not self._response_succeeded(response):
                     code = getattr(response, "code", None)
                     if code in _FEISHU_REPLY_FALLBACK_CODES:
-                        if (metadata or {}).get("thread_id"):
+                        if (routing_metadata or {}).get("thread_id"):
                             logger.warning(
                                 "[Feishu] Reply to %s failed in thread %s (code %s — message withdrawn/missing); "
                                 "skipping top-level fallback to avoid creating a new topic",
                                 active_reply_to,
-                                (metadata or {}).get("thread_id"),
+                                (routing_metadata or {}).get("thread_id"),
                                 code,
                             )
                             return response
@@ -5144,7 +5172,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             msg_type=msg_type,
                             payload=payload,
                             reply_to=None,
-                            metadata=metadata,
+                            metadata=routing_metadata,
                         )
                 return response
             except Exception as exc:
