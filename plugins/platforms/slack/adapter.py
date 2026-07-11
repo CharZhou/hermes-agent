@@ -87,12 +87,9 @@ class _ThreadContextCache:
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
-    Lazy-installs slack-bolt/slack-sdk via ``tools.lazy_deps.ensure("platform.slack")``
-    on first call if not present. Rebinds all module-level globals on success.
+    Validates the pinned SDK versions on every platform check, then rebinds
+    module globals. This lets a stale lazy-installed dependency be refreshed.
     """
-    if SLACK_AVAILABLE:
-        return True
-
     def _import():
         from slack_bolt.async_app import AsyncApp
         from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler

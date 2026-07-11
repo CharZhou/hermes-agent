@@ -245,22 +245,22 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
 
-    If python-telegram-bot is missing, attempts to lazy-install it via
-    ``tools.lazy_deps.ensure("platform.telegram")``. After a successful
-    install, re-imports the SDK and flips ``TELEGRAM_AVAILABLE`` to True
-    so the adapter's class-level type aliases get rebound.
+    Validates the pinned python-telegram-bot version before accepting an
+    importable SDK. After a successful install, re-imports the SDK and flips
+    ``TELEGRAM_AVAILABLE`` to True so the adapter's class-level type aliases
+    get rebound.
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
-    if TELEGRAM_AVAILABLE:
-        return True
     try:
         from tools.lazy_deps import ensure as _lazy_ensure
         _lazy_ensure("platform.telegram", prompt=False)
     except Exception:
         return False
+    if TELEGRAM_AVAILABLE:
+        return True
     try:
         from telegram import Update as _Update, Bot as _Bot, Message as _Message
         from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM

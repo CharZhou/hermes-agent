@@ -59,6 +59,7 @@ import logging
 import mimetypes
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -1493,11 +1494,22 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
 def check_feishu_requirements() -> bool:
     """Check if Feishu/Lark dependencies are available.
 
-    Lazy-installs lark-oapi via ``tools.lazy_deps.ensure("platform.feishu")``
-    on first call if not present. Rebinds all module-level globals on success.
+    Always validates the pinned SDK version before rebinding module globals.
+    An importable but stale ``lark-oapi`` cannot support the Channel signaling
+    argument required by the WebSocket client.
     """
-    if FEISHU_AVAILABLE:
-        return True
+    from tools.lazy_deps import ensure_and_bind, feature_missing
+
+    stale_lark_oapi = any(
+        spec.startswith("lark-oapi")
+        for spec in feature_missing("platform.feishu")
+    )
+    if stale_lark_oapi:
+        # The SDK is imported at module load. Drop its cached modules before
+        # ensure_and_bind reimports the freshly installed version.
+        for module_name in tuple(sys.modules):
+            if module_name == "lark_oapi" or module_name.startswith("lark_oapi."):
+                sys.modules.pop(module_name, None)
 
     def _import():
         import lark_oapi as lark
@@ -1548,7 +1560,6 @@ def check_feishu_requirements() -> bool:
             "FEISHU_AVAILABLE": True,
         }
 
-    from tools.lazy_deps import ensure_and_bind
     return ensure_and_bind("platform.feishu", _import, globals(), prompt=False)
 
 
