@@ -2278,6 +2278,50 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_session_close_releases_resume_lock_before_slow_teardown(monkeypatch):
+    """One slow session finalizer must not stall unrelated session.resume RPCs."""
+    teardown_started = threading.Event()
+    release_teardown = threading.Event()
+    response = {}
+
+    def _slow_teardown(_session, *, end_reason="tui_close"):
+        assert end_reason == "tui_close"
+        teardown_started.set()
+        assert release_teardown.wait(timeout=2.0)
+
+    monkeypatch.setattr(server, "_teardown_session", _slow_teardown)
+    server._sessions["slow-close"] = _session()
+
+    def _close():
+        response.update(
+            server.handle_request(
+                {
+                    "id": "close",
+                    "method": "session.close",
+                    "params": {"session_id": "slow-close"},
+                }
+            )
+        )
+
+    thread = threading.Thread(target=_close)
+    thread.start()
+    acquired = False
+    try:
+        assert teardown_started.wait(timeout=1.0)
+        assert "slow-close" not in server._sessions
+        acquired = server._session_resume_lock.acquire(timeout=0.2)
+        assert acquired, "slow teardown kept the global resume lock held"
+    finally:
+        if acquired:
+            server._session_resume_lock.release()
+        release_teardown.set()
+        thread.join(timeout=2.0)
+        server._sessions.pop("slow-close", None)
+
+    assert not thread.is_alive()
+    assert response["result"] == {"closed": True}
+
+
 def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
     """A detached WS session past its grace window has its slash_worker closed.
 
@@ -2306,6 +2350,51 @@ def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
         assert closed["worker"] is True
     finally:
         server._sessions.pop("orphan-sid", None)
+
+
+def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
+    """Grace reaping claims under the lock but finalizes after releasing it."""
+    scheduled = {}
+    teardown_started = threading.Event()
+    release_teardown = threading.Event()
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            scheduled["callback"] = callback
+
+        def start(self):
+            return None
+
+    def _slow_teardown(_session, *, end_reason="tui_close"):
+        assert end_reason == "ws_orphan_reap"
+        teardown_started.set()
+        assert release_teardown.wait(timeout=2.0)
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_teardown_session", _slow_teardown)
+    server._sessions["slow-orphan"] = _session(
+        transport=server._detached_ws_transport,
+        running=False,
+    )
+
+    server._schedule_ws_orphan_reap("slow-orphan")
+    thread = threading.Thread(target=scheduled["callback"])
+    thread.start()
+    acquired = False
+    try:
+        assert teardown_started.wait(timeout=1.0)
+        assert "slow-orphan" not in server._sessions
+        acquired = server._session_resume_lock.acquire(timeout=0.2)
+        assert acquired, "orphan teardown kept the global resume lock held"
+    finally:
+        if acquired:
+            server._session_resume_lock.release()
+        release_teardown.set()
+        thread.join(timeout=2.0)
+        server._sessions.pop("slow-orphan", None)
+
+    assert not thread.is_alive()
 
 
 def test_finalize_session_closes_slash_worker(monkeypatch):
@@ -8183,7 +8272,9 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert resp["result"]["messages"] == ["Chromium-family browser is already listening on port 9222"]
+    assert resp["result"]["messages"] == [
+        "Chromium-family browser is already listening at http://127.0.0.1:9222"
+    ]
     assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
     # First cleanup runs against the OLD env (none here), second against the NEW.
     assert cleanup_calls == ["", "http://127.0.0.1:9222"]
@@ -8203,7 +8294,9 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert resp["result"]["messages"] == ["Chromium-family browser is already listening on port 9222"]
+    assert resp["result"]["messages"] == [
+        "Chromium-family browser is already listening at http://127.0.0.1:9222"
+    ]
     assert urls[0] == "http://127.0.0.1:9222/json/version"
 
 
@@ -8226,6 +8319,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
                 "hermes_cli.browser_connect.launch_chrome_debug",
                 return_value=ChromeDebugLaunch(),
             ),
+            patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
             patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
             patch(
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
@@ -8358,9 +8452,13 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
         def __exit__(self, *_):
             return False
 
+    # IPv4 answers only from the 3rd probe onwards (browser still starting);
+    # the IPv6 loopback never answers.
     attempts = {"n": 0}
 
-    def _opener(_url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+        if "[::1]" in url:
+            raise OSError("no IPv6 listener")
         attempts["n"] += 1
         if attempts["n"] < 3:
             raise OSError("not ready")
@@ -8369,9 +8467,14 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     import urllib.request
 
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    launched = ChromeDebugLaunch(launched=True)
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
-        with patch(
-            "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True
+        with (
+            patch(
+                "hermes_cli.browser_connect.launch_chrome_debug",
+                return_value=launched,
+            ),
+            patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
         ):
             resp = server.handle_request(
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
@@ -8384,6 +8487,94 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
         "Chromium-family browser launched and listening on port 9222",
     ]
     assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
+
+
+def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
+    """Regression: an IDE debugger squatting 127.0.0.1:9222 pushes the debug
+    browser onto [::1]:9222. Connect must discover and adopt the IPv6
+    endpoint instead of timing out against the squatter."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+        if "[::1]" in url:
+            return _Resp()
+        raise OSError("IPv4 loopback held by a non-CDP squatter")
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
+        )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://[::1]:9222"
+    assert os.environ["BROWSER_CDP_URL"] == "http://[::1]:9222"
+
+
+def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch):
+    """When neither loopback speaks CDP but the port is held by another
+    application, connect must pick an alternate port for the launch and
+    say so — never fight the squatter for 9222."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+        if ":9223" in url and "127.0.0.1" in url:
+            return _Resp()  # relaunched browser comes up on the alternate port
+        raise OSError("9222 squatted / nothing else listening")
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    launch_ports: list[int] = []
+
+    def _launch(port, _system):
+        launch_ports.append(port)
+        return ChromeDebugLaunch(launched=True)
+
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        with (
+            patch("hermes_cli.browser_connect.launch_chrome_debug", side_effect=_launch),
+            patch("hermes_cli.browser_connect.local_port_in_use", return_value=True),
+            patch("hermes_cli.browser_connect.find_free_debug_port", return_value=9223),
+        ):
+            resp = server.handle_request(
+                {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
+            )
+
+    assert launch_ports == [9223]
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9223"
+    assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9223"
+    assert any("occupied by another application" in m for m in resp["result"]["messages"])
 
 
 def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
@@ -9671,17 +9862,20 @@ def test_restart_slash_worker_stores_on_live_session(monkeypatch):
         server._sessions.pop("live-restart", None)
 
 
-def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
+def test_session_close_rpc_claims_then_tears_down(monkeypatch):
     seen = []
+    claimed = {"session_key": "k"}
+    monkeypatch.setattr(server, "_pop_session_by_id", lambda sid: seen.append(sid) or claimed)
     monkeypatch.setattr(
-        server, "_close_session_by_id",
-        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+        server,
+        "_teardown_popped_session",
+        lambda session, *, end_reason: seen.append((session, end_reason)) or True,
     )
     resp = server.handle_request(
         {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
     )
     assert resp["result"] == {"closed": True}
-    assert seen == [("s9", "tui_close")]
+    assert seen == ["s9", (claimed, "tui_close")]
 
 
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
