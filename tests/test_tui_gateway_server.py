@@ -885,6 +885,78 @@ def test_dispatch_rejects_non_object_params():
     }
 
 
+def test_system_battery_returns_reading(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.battery",
+        types.SimpleNamespace(
+            read_battery=lambda: types.SimpleNamespace(
+                available=True, percent=77, plugged=False
+            ),
+            battery_category=lambda _s: "good",
+        ),
+    )
+
+    resp = server.dispatch({"id": "b1", "method": "system.battery", "params": {}})
+
+    assert resp["result"] == {
+        "available": True,
+        "percent": 77,
+        "plugged": False,
+        "category": "good",
+    }
+
+
+def test_system_battery_fails_open(monkeypatch):
+    def boom():
+        raise RuntimeError("no battery subsystem")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.battery",
+        types.SimpleNamespace(read_battery=boom, battery_category=lambda _s: "dim"),
+    )
+
+    resp = server.dispatch({"id": "b2", "method": "system.battery", "params": {}})
+
+    assert resp["result"]["available"] is False
+    assert resp["result"]["percent"] is None
+
+
+def test_config_set_battery_toggles_and_persists(monkeypatch):
+    writes: dict[str, object] = {}
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {"battery": False}})
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
+    )
+
+    resp = server.dispatch(
+        {"id": "c1", "method": "config.set", "params": {"key": "battery", "value": ""}}
+    )
+
+    assert resp["result"] == {"key": "battery", "value": "on"}
+    assert writes == {"display.battery": True}
+
+
+def test_config_set_battery_explicit_off(monkeypatch):
+    writes: dict[str, object] = {}
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {"battery": True}})
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
+    )
+
+    resp = server.dispatch(
+        {
+            "id": "c2",
+            "method": "config.set",
+            "params": {"key": "battery", "value": "off"},
+        }
+    )
+
+    assert resp["result"] == {"key": "battery", "value": "off"}
+    assert writes == {"display.battery": False}
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,
@@ -1418,6 +1490,9 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
                 self.get_messages_as_conversation(session_id, include_ancestors=True),
             )
 
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
         def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
             captured.setdefault("history_calls", []).append((target, include_ancestors))
             return (
@@ -1555,6 +1630,9 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
                 self.get_messages_as_conversation(session_id, include_ancestors=True),
             )
 
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
         def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
             return [{"role": "user", "content": "hello"}]
 
@@ -1620,6 +1698,9 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
                 self.get_messages_as_conversation(session_id, include_ancestors=True),
             )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
 
         def get_messages_as_conversation(self, _target, include_ancestors=False, repair_alternation=False):
             return [{"role": "user", "content": "hello"}]
@@ -5677,6 +5758,9 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
                 self.get_messages_as_conversation(session_id, repair_alternation=True),
                 self.get_messages_as_conversation(session_id, include_ancestors=True),
             )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
 
         def get_messages_as_conversation(self, key, include_ancestors=True, repair_alternation=False):
             assert key == "session-key"
