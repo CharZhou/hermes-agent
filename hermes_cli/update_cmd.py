@@ -3464,15 +3464,22 @@ def _normalize_managed_eol(git_cmd, repo_root):
     probe = git_cmd + ["-c", "core.autocrlf=false"]
 
     def _dirty(*extra):
+        # --name-only reports the raw index change even when an ignore option
+        # makes the patch empty. Numstat omits ignored-only changes, while -z
+        # keeps the path list safe to pass back through Git's NUL pathspec.
         out = subprocess.run(
-            probe + ["diff", "-z", "--name-only", *extra],
+            probe + ["diff", "--no-renames", "--numstat", "-z", *extra],
             cwd=repo_root,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
         )
         if out.returncode != 0:
             return None
-        return {p for p in out.stdout.split("\0") if p}
+        return {
+            fields[2]
+            for entry in out.stdout.split("\0")
+            if entry and len(fields := entry.split("\t", 2)) == 3
+        }
 
     def _eol_only():
         all_dirty, real_dirty = _dirty(), _dirty("--ignore-cr-at-eol")
