@@ -675,6 +675,33 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
         "finalization" in record.message for record in caplog.records
     )
 
+def test_run_codex_stream_surfaces_cancelled_status_in_final_response(monkeypatch):
+    """A cancelled-only stream must terminate cleanly through the shared consumer."""
+    agent = _build_agent(monkeypatch)
+    cancelled_event = SimpleNamespace(
+        type="response.canceled",  # US spelling from some backends
+        response=SimpleNamespace(
+            status="canceled",
+            id="resp_cancelled_1",
+            usage=None,
+            error=None,
+        ),
+    )
+
+    def _fake_create(**kwargs):
+        return _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            cancelled_event,
+        ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.status == "cancelled"
+    assert response.id == "resp_cancelled_1"
+    assert response.output == []
 
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
@@ -1981,7 +2008,6 @@ def test_duplicate_detection_uses_commentary_when_hidden_reasoning_changes(monke
     reasoning_items = interim_msgs[0].get("codex_reasoning_items")
     if reasoning_items:
         assert reasoning_items[0].get("id") == "rs_second"
-
 
 
 
