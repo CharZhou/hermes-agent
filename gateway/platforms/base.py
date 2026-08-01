@@ -103,6 +103,26 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
     return notify_metadata
 
 
+def _delivery_metadata_for_event(event, metadata: dict | None = None) -> dict | None:
+    """Merge adapter-declared delivery metadata from an inbound event.
+
+    Most event metadata is inbound-only context and should not be forwarded to
+    platform send calls.  Adapters that need send-time context must put a small,
+    sanitized dict under ``event.metadata["delivery_metadata"]``.
+    """
+    delivery_metadata = dict(metadata) if metadata else {}
+    event_metadata = getattr(event, "metadata", None) or {}
+    event_delivery_metadata = event_metadata.get("delivery_metadata")
+
+    if isinstance(event_delivery_metadata, dict):
+        for key, value in event_delivery_metadata.items():
+            clean_key = str(key or "").strip()
+            if clean_key:
+                delivery_metadata[clean_key] = value
+
+    return delivery_metadata or None
+
+
 def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics.
 
@@ -5850,7 +5870,10 @@ class BasePlatformAdapter(ABC):
         # Gated per-platform: when typing_indicator=False the refresh loop is
         # never spawned, so no "typing…" / "is thinking…" status is shown.
         # typing_task stays None; _stop_typing_refresh already no-ops on None.
-        _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        _thread_metadata = _delivery_metadata_for_event(
+            event,
+            _thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+        )
         typing_task: Optional[asyncio.Task] = None
         if getattr(self.config, "typing_indicator", True):
             _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
