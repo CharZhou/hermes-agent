@@ -386,7 +386,8 @@ def iter_skills_files(
 # ---------------------------------------------------------------------------
 
 # The cache subdirectories that should be mirrored into remote backends.
-# Each tuple is (new_subpath, old_name) matching hermes_constants.get_hermes_dir().
+# Each tuple is (new_subpath, old_name). New-layout dirs win for mounts when
+# present because providers now write generated artifacts there.
 _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/documents", "document_cache"),
     ("cache/images", "image_cache"),
@@ -409,21 +410,29 @@ def get_cache_directory_mounts(
     """Return mount entries for each cache directory that exists on disk.
 
     Used by Docker to create bind mounts.  Each entry has ``host_path`` and
-    ``container_path`` keys.  The host path is resolved via
-    ``get_hermes_dir()`` for backward compatibility with old directory layouts.
+    ``container_path`` keys. Legacy directories remain a fallback for installs
+    that have not written new-layout artifacts yet.
     """
-    from hermes_constants import get_hermes_dir
+    from hermes_constants import get_hermes_home
 
     mounts: List[Dict[str, str]] = []
+    home = get_hermes_home()
     for new_subpath, old_name in _CACHE_DIRS:
-        host_dir = get_hermes_dir(new_subpath, old_name)
-        if host_dir.is_dir():
-            # Always map to the *new* container layout regardless of host layout.
-            container_path = f"{container_base.rstrip('/')}/{new_subpath}"
-            mounts.append({
-                "host_path": str(host_dir),
-                "container_path": container_path,
-            })
+        new_dir = home / new_subpath
+        old_dir = home / old_name
+        if new_dir.is_dir():
+            host_dir = new_dir
+        elif old_dir.is_dir():
+            host_dir = old_dir
+        else:
+            continue
+
+        # Always map to the *new* container layout regardless of host layout.
+        container_path = f"{container_base.rstrip('/')}/{new_subpath}"
+        mounts.append({
+            "host_path": str(host_dir),
+            "container_path": container_path,
+        })
     return mounts
 
 
@@ -526,5 +535,3 @@ def iter_cache_files(
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
-
-

@@ -354,6 +354,24 @@ class TestCacheDirectoryMounts:
         assert "/root/.hermes/cache/documents" in container_paths
         assert "/root/.hermes/cache/images" in container_paths
 
+    def test_new_cache_dir_wins_when_legacy_dir_also_exists(self, tmp_path, monkeypatch):
+        """Generated artifacts use the new cache layout, even on old installs."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "image_cache").mkdir()
+        (hermes_home / "cache" / "images").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mounts = get_cache_directory_mounts()
+        image_mounts = [
+            m for m in mounts if m["container_path"] == "/root/.hermes/cache/images"
+        ]
+
+        assert image_mounts == [{
+            "host_path": str(hermes_home / "cache" / "images"),
+            "container_path": "/root/.hermes/cache/images",
+        }]
+
     def test_empty_hermes_home(self, tmp_path, monkeypatch):
         """No cache dirs → empty list."""
         hermes_home = tmp_path / ".hermes"

@@ -516,6 +516,47 @@ class TestMediaDeliveryPathValidation:
 
         assert filtered == [(str(safe.resolve()), True)]
 
+    def test_docker_workspace_media_path_translates_to_host_workspace(
+        self, tmp_path, monkeypatch,
+    ):
+        sandbox_root = tmp_path / "sandboxes"
+        workspace = sandbox_root / "docker" / "default" / "workspace"
+        image = workspace / "foo.png"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"fake image")
+        self._patch_roots(monkeypatch)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "1")
+        monkeypatch.setattr(
+            "tools.environments.base.get_sandbox_dir",
+            lambda: sandbox_root,
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/foo.png"
+        ) == str(image.resolve())
+
+    def test_docker_workspace_media_path_cannot_escape_workspace(
+        self, tmp_path, monkeypatch,
+    ):
+        sandbox_root = tmp_path / "sandboxes"
+        workspace = sandbox_root / "docker" / "default" / "workspace"
+        secret = sandbox_root / "docker" / "default" / "home" / "secret.png"
+        workspace.mkdir(parents=True)
+        secret.parent.mkdir(parents=True)
+        secret.write_bytes(b"secret")
+        self._patch_roots(monkeypatch)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "1")
+        monkeypatch.setattr(
+            "tools.environments.base.get_sandbox_dir",
+            lambda: sandbox_root,
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/../home/secret.png"
+        ) is None
+
 
     def test_allows_stale_kanban_attachment_but_not_neighboring_workspace(
         self, tmp_path, monkeypatch,
