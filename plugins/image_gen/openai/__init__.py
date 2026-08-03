@@ -27,6 +27,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.secret_scope import get_secret
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
@@ -145,11 +146,11 @@ def _resolve_api_key() -> Optional[str]:
             env_name = env_name.strip()
             if not env_name:
                 continue
-            value = os.environ.get(env_name, "").strip()
+            value = (get_secret(env_name) or "").strip()
             if value:
                 return value
 
-    value = os.environ.get("OPENAI_API_KEY", "").strip()
+    value = (get_secret("OPENAI_API_KEY") or "").strip()
     return value or None
 
 

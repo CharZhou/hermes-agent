@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
 import plugins.image_gen.openai as openai_plugin
 
 
@@ -90,6 +91,21 @@ class TestAvailability:
         )
 
         assert openai_plugin.OpenAIImageGenProvider().is_available() is True
+
+    def test_key_env_honors_active_profile_secret_scope(self, monkeypatch, tmp_path):
+        import yaml
+
+        monkeypatch.setenv("CUSTOM_IMAGE_KEY", "another-profile-key")
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai": {"key_env": "CUSTOM_IMAGE_KEY"}}})
+        )
+        set_multiplex_active(True)
+        token = set_secret_scope({})
+        try:
+            assert openai_plugin.OpenAIImageGenProvider().is_available() is False
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
 
 
 # ── Model resolution ────────────────────────────────────────────────────────
@@ -288,4 +304,3 @@ class TestGenerate:
         assert result["image"].startswith("/")
         assert "example.com" not in result["image"]
         mock_save_url.assert_called_once()
-
