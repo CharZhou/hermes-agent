@@ -34,6 +34,7 @@ mcp_servers:
     timeout: 120
     connect_timeout: 60
     supports_parallel_tool_calls: false
+    forward_hermes_context: false
     tools:
       include: []
       exclude: []
@@ -57,6 +58,7 @@ mcp_servers:
 | `timeout` | number | both | Tool call timeout in seconds (default: `300`) |
 | `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
+| `forward_hermes_context` | bool-like | both | Forward namespaced Hermes run/session context in MCP request metadata (default: `false`; enable only for trusted servers) |
 | `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |
 | `transport` | string | HTTP | Set to `sse` to use the SSE transport instead of Streamable HTTP |
 | `keepalive_interval` | number | both | Liveness ping cadence in seconds (default: `180`, floored at 5s). Set below the server's session TTL for servers that GC idle sessions quickly |
@@ -66,6 +68,22 @@ mcp_servers:
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
+
+## Hermes context forwarding
+
+Set `forward_hermes_context: true` on a trusted MCP server when it needs to
+identify the Hermes run, conversation, and tool call that originated a
+request. Hermes sends the available non-empty values in standard MCP request
+metadata under `_meta["io.nous.hermes/context"]`:
+
+- `run_id`, `task_id`, `session_id`, and `session_key`
+- `tool_call_id`, `turn_id`, and `api_request_id`
+- `platform`
+
+The namespace also includes `version: "1"`. These values are never added to
+the MCP tool's ordinary `arguments` or model-visible tool schema. The setting
+defaults to `false`, so servers that do not opt in retain the original request
+shape.
 
 ## Environment variable references
 

@@ -109,6 +109,13 @@ API / CLI / TUI / Gateway
 run. It does not reuse `session_id` or `task_id` as a substitute. Entry points
 that do not already have a run ID do not synthesize one.
 
+The run approval key remains a separate authorization namespace keyed by
+`run_id`. It is not forwarded as `session_key`. The MCP context uses the
+existing API session-key resolution (`gateway_session_key`, falling back to
+the durable session identifier when that is the entry point's established
+behavior), while approval routing continues to use its dedicated approval
+ContextVar.
+
 The registry continues to forward context through its existing keyword
 argument mechanism. Non-MCP handlers may ignore the additional context and
 must not regress when it is present.
@@ -124,9 +131,10 @@ but do not change the server's forwarding configuration.
 
 ## Lifecycle And Failure Handling
 
-Request and run entry points bind `ContextVar` values using returned tokens.
-Success, failure, cancellation, and worker exit paths restore those tokens in
-`finally` blocks so a later request cannot observe stale context.
+Request and run entry points use Hermes' existing `set_session_vars()` /
+`clear_session_vars()` lifecycle. Success, failure, cancellation, and worker
+exit paths explicitly clear the values in `finally` blocks so a later request
+cannot observe stale context or fall back to a stale process environment.
 
 For an enabled server, missing optional values do not fail the tool call. The
 metadata namespace is still sent with `version: "1"`, and the MCP server may

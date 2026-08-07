@@ -4,6 +4,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -493,6 +494,139 @@ class TestToolHandler:
                 result = json.loads(handler({"name": "world"}))
             assert result["result"] == "hello world"
             mock_session.call_tool.assert_called_once_with("greet", arguments={"name": "world"})
+        finally:
+            _servers.pop("test_srv", None)
+
+    def test_context_builder_omits_empty_and_non_string_values(self):
+        from tools.mcp_tool import _build_hermes_context_meta
+
+        assert _build_hermes_context_meta(
+            run_id="run-A",
+            session_id="session-A",
+            task_id="",
+            platform=None,
+            turn_id=7,
+        ) == {
+            "io.nous.hermes/context": {
+                "version": "1",
+                "run_id": "run-A",
+                "session_id": "session-A",
+            }
+        }
+
+    def test_opted_in_handler_passes_context_meta_separate_from_arguments(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("ok", is_error=False)
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        server._config = {"forward_hermes_context": "true"}
+        _servers["test_srv"] = server
+        tokens = set_session_vars(
+            run_id="run-A",
+            session_key="scope-A",
+            platform="api_server",
+        )
+
+        try:
+            handler = _make_tool_handler("test_srv", "greet", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(
+                    handler(
+                        {"name": "world"},
+                        task_id="task-A",
+                        session_id="session-A",
+                        tool_call_id="call-A",
+                        turn_id="turn-A",
+                        api_request_id="request-A",
+                    )
+                )
+
+            assert result["result"] == "ok"
+            mock_session.call_tool.assert_called_once_with(
+                "greet",
+                arguments={"name": "world"},
+                meta={
+                    "io.nous.hermes/context": {
+                        "version": "1",
+                        "run_id": "run-A",
+                        "task_id": "task-A",
+                        "session_id": "session-A",
+                        "session_key": "scope-A",
+                        "tool_call_id": "call-A",
+                        "turn_id": "turn-A",
+                        "api_request_id": "request-A",
+                        "platform": "api_server",
+                    }
+                },
+            )
+        finally:
+            clear_session_vars(tokens)
+            _servers.pop("test_srv", None)
+
+    def test_context_snapshot_survives_context_free_mcp_loop_hop(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("ok", is_error=False)
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        server._config = {"forward_hermes_context": True}
+        _servers["test_srv"] = server
+        handler = _make_tool_handler("test_srv", "greet", 120)
+
+        def run_without_caller_context(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+            return contextvars.Context().run(asyncio.run, coro)
+
+        def invoke(run_id, session_id, session_key, call_id):
+            tokens = set_session_vars(run_id=run_id, session_key=session_key)
+            try:
+                handler(
+                    {},
+                    session_id=session_id,
+                    tool_call_id=call_id,
+                )
+            finally:
+                clear_session_vars(tokens)
+
+        try:
+            with patch(
+                "tools.mcp_tool._run_on_mcp_loop",
+                side_effect=run_without_caller_context,
+            ):
+                contextvars.Context().run(
+                    invoke, "run-A", "session-A", "scope-A", "call-A"
+                )
+                contextvars.Context().run(
+                    invoke, "run-B", "session-B", "scope-B", "call-B"
+                )
+
+            contexts = [
+                call.kwargs["meta"]["io.nous.hermes/context"]
+                for call in mock_session.call_tool.call_args_list
+            ]
+            assert contexts == [
+                {
+                    "version": "1",
+                    "run_id": "run-A",
+                    "session_id": "session-A",
+                    "session_key": "scope-A",
+                    "tool_call_id": "call-A",
+                },
+                {
+                    "version": "1",
+                    "run_id": "run-B",
+                    "session_id": "session-B",
+                    "session_key": "scope-B",
+                    "tool_call_id": "call-B",
+                },
+            ]
         finally:
             _servers.pop("test_srv", None)
 

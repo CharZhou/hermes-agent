@@ -134,6 +134,22 @@ def test_get_session_env_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
 
 
+def test_run_id_is_bound_and_explicitly_cleared():
+    tokens = set_session_vars(run_id="run-A")
+    try:
+        assert get_session_env("HERMES_RUN_ID") == "run-A"
+    finally:
+        clear_session_vars(tokens)
+
+    assert get_session_env("HERMES_RUN_ID") == ""
+
+
+def test_run_id_is_reset_with_other_session_context():
+    set_session_vars(run_id="run-A")
+    reset_session_vars()
+    assert get_session_env("HERMES_RUN_ID") == ""
+
+
 # ---------------------------------------------------------------------------
 # SESSION_KEY contextvars tests
 # ---------------------------------------------------------------------------
@@ -272,4 +288,3 @@ def test_cron_session_set_clear_and_reset_tristate(monkeypatch):
 
     reset_session_vars()
     assert get_session_env("HERMES_CRON_SESSION") == "1"
-
