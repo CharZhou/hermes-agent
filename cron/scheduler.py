@@ -489,11 +489,28 @@ class _ReadWriteLock:
         self._writer_active = False
         self._writers_waiting = 0
 
-    def acquire_read(self) -> None:
+    def acquire_read(self, timeout: float | None = None) -> bool:
+        """Acquire a read lock.
+
+        Returns ``True`` if the lock was acquired, ``False`` on timeout.
+        A timed-out caller proceeds without the lock (degraded mode) —
+        see the call-site in ``run_job`` for the logging / trade-off.
+        """
+        deadline = (
+            time.monotonic() + timeout if timeout is not None else None
+        )
         with self._cond:
             while self._writer_active or self._writers_waiting > 0:
-                self._cond.wait()
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self._cond.notify_all()
+                        return False
+                    self._cond.wait(timeout=remaining)
+                else:
+                    self._cond.wait()
             self._readers += 1
+        return True
 
     def release_read(self) -> None:
         with self._cond:
@@ -501,15 +518,31 @@ class _ReadWriteLock:
             if self._readers == 0:
                 self._cond.notify_all()
 
-    def acquire_write(self) -> None:
+    def acquire_write(self, timeout: float | None = None) -> bool:
+        """Acquire a write lock.
+
+        Returns ``True`` if the lock was acquired, ``False`` on timeout.
+        A timed-out caller proceeds without the lock (degraded mode).
+        """
+        deadline = (
+            time.monotonic() + timeout if timeout is not None else None
+        )
         with self._cond:
             self._writers_waiting += 1
             try:
                 while self._writer_active or self._readers > 0:
-                    self._cond.wait()
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            self._cond.notify_all()
+                            return False
+                        self._cond.wait(timeout=remaining)
+                    else:
+                        self._cond.wait()
             finally:
                 self._writers_waiting -= 1
             self._writer_active = True
+        return True
 
     def release_write(self) -> None:
         with self._cond:
@@ -520,6 +553,53 @@ class _ReadWriteLock:
 # Serializes the per-job TERMINAL_CWD override against every other concurrently
 # running cron job.  See _ReadWriteLock and run_job for the usage contract.
 _terminal_cwd_lock = _ReadWriteLock()
+
+# Ceiling on how long a cron job waits for the TERMINAL_CWD lock before
+# FAILING (fail-closed, #79768). Derived from the cron inactivity limit
+# (HERMES_CRON_TIMEOUT, default 600s): a wedged lock holder stops touching
+# its activity clock, so the inactivity monitor usually reaps it and the
+# lock is released within roughly that limit. The bound is measured from
+# the WAITER's arrival, so a holder that wedges late (or hangs in pre-agent
+# setup before the monitor arms) can still outlive it — waiters then fail
+# loudly rather than run: proceeding without the lock lets the holder's
+# process-global TERMINAL_CWD override leak into this job's shell/file/
+# code-exec commands (wrong-directory execution — the exact corruption
+# _ReadWriteLock exists to prevent, see
+# test_reader_never_observes_writer_override). A healthy long-running
+# workdir job past the bound also fails its waiters loudly rather than
+# corrupting them silently; the failure names the holder pattern so the fix
+# (stagger schedules / drop the workdir) is actionable.
+_CWD_LOCK_TIMEOUT_FLOOR_SECONDS = 120.0
+_CWD_LOCK_TIMEOUT_MARGIN_SECONDS = 60.0
+
+
+def _cron_inactivity_seconds() -> float:
+    """Parse HERMES_CRON_TIMEOUT (seconds). 0 = unlimited; bad input = 600.
+
+    Shared by run_job's inactivity monitor (which maps 0 to "no limit") and
+    the cwd-lock bound below (which keeps the wait bounded regardless) so
+    the two sites cannot drift apart — the lock bound must stay at or above
+    the inactivity limit or waiters would fail while a healthy holder runs.
+    """
+    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    if not raw:
+        return 600.0
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        logger.warning("Invalid HERMES_CRON_TIMEOUT=%r; using default 600s", raw)
+        return 600.0
+
+
+def _cwd_lock_timeout_seconds() -> float:
+    """Bound for the TERMINAL_CWD lock wait: inactivity limit + margin."""
+    inactivity = _cron_inactivity_seconds()
+    if inactivity <= 0:  # 0 = unlimited job runtime; keep the wait bounded.
+        inactivity = 600.0
+    return (
+        max(inactivity, _CWD_LOCK_TIMEOUT_FLOOR_SECONDS)
+        + _CWD_LOCK_TIMEOUT_MARGIN_SECONDS
+    )
 
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
@@ -3172,10 +3252,14 @@ def run_job(
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
 
     _holds_cwd_write = _job_workdir is not None
+    _cwd_lock_timeout = _cwd_lock_timeout_seconds()
+    _cwd_lock_acquired = True
     if _holds_cwd_write:
-        _terminal_cwd_lock.acquire_write()
+        if not _terminal_cwd_lock.acquire_write(timeout=_cwd_lock_timeout):
+            _cwd_lock_acquired = False
     else:
-        _terminal_cwd_lock.acquire_read()
+        if not _terminal_cwd_lock.acquire_read(timeout=_cwd_lock_timeout):
+            _cwd_lock_acquired = False
 
     # Everything after the acquire MUST live inside this try, so the finally
     # below always releases the lock even if the env override or any later
@@ -3186,6 +3270,22 @@ def run_job(
     _cron_session_token = None
     _non_dispatcher_token = None
     try:
+        if not _cwd_lock_acquired:
+            # Fail closed (#79768): running without the lock would let a
+            # concurrent workdir job's process-global TERMINAL_CWD override
+            # leak into this job's shell/file/code-exec commands — silent
+            # wrong-directory execution, the exact corruption the lock
+            # exists to prevent. A loud failure is recoverable (next tick /
+            # manual rerun); a job that ran in the wrong directory is not.
+            raise TimeoutError(
+                f"Timed out waiting for the TERMINAL_CWD "
+                f"{'write' if _holds_cwd_write else 'read'} lock after "
+                f"{_cwd_lock_timeout:.0f}s — another cron job (a workdir "
+                f"writer, or long-running readers) has held it for longer "
+                f"than the cron inactivity limit. If a workdir job is the "
+                f"holder, stagger its schedule or remove its workdir to "
+                f"unblock this job (#79768)."
+            )
         # Scope cron approval policy to this job. Keep the token so the finally
         # restores the pre-job state instead of pinning an explicit empty value,
         # which would suppress the legacy os.environ fallback used by standalone
@@ -3610,18 +3710,7 @@ def run_job(
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
-        _raw_cron_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-        if _raw_cron_timeout:
-            try:
-                _cron_timeout = float(_raw_cron_timeout)
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Invalid HERMES_CRON_TIMEOUT=%r; using default 600s",
-                    _raw_cron_timeout,
-                )
-                _cron_timeout = 600.0
-        else:
-            _cron_timeout = 600.0
+        _cron_timeout = _cron_inactivity_seconds()
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
         # Keep the one-shot run_claim fresh while the run is alive (#62002):
@@ -3840,19 +3929,22 @@ def run_job(
 
     finally:
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
-        # only ever mutate it when the job has a workdir; see the setup block
-        # at the top of run_job for the serialization guarantee.
-        if _job_workdir:
+        # only ever mutate it when the job has a workdir AND actually held
+        # the write lock — a fail-closed timeout raised before the env-set,
+        # so restoring there would replay a pre-wait snapshot over the
+        # ACTIVE holder's live override.
+        if _job_workdir and _cwd_lock_acquired:
             if _prior_terminal_cwd == "_UNSET_":
                 os.environ.pop("TERMINAL_CWD", None)
             else:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
         # Release the cwd lock now that the env is restored, so a waiting
         # workdir job (or queued reader) can proceed without seeing the override.
-        if _holds_cwd_write:
-            _terminal_cwd_lock.release_write()
-        else:
-            _terminal_cwd_lock.release_read()
+        if _cwd_lock_acquired:
+            if _holds_cwd_write:
+                _terminal_cwd_lock.release_write()
+            else:
+                _terminal_cwd_lock.release_read()
         # Clean up ContextVar session/delivery state for this job.
         # clear_session_vars also clears _SESSION_CWD internally, so no
         # separate clear_session_cwd() call is needed.
@@ -4196,6 +4288,51 @@ def _notify_provider_jobs_changed() -> None:
         resolve_cron_scheduler().on_jobs_changed()
     except Exception as e:
         logger.debug("on_jobs_changed notify failed: %s", e)
+
+
+class CronSchedulerRegistrationError(RuntimeError):
+    """A job was persisted but its first external trigger was not registered."""
+
+    def __init__(self, job: dict, cause: Exception) -> None:
+        self.job = job
+        self.cause = cause
+        super().__init__(
+            f"Cron job '{job['id']}' was saved, but its first scheduler "
+            f"registration failed ({type(cause).__name__}). Do not create a "
+            "duplicate. Pause/resume or update the job to retry registration."
+        )
+
+    def user_message(self) -> str:
+        """Human-facing variant for chat/CLI surfaces (no exception class name)."""
+        label = self.job.get("name") or self.job["id"]
+        return (
+            f"Saved cron job '{label}', but couldn't register it with the "
+            "external scheduler yet. The job is kept — don't re-create it; "
+            "pause/resume or edit it (e.g. via /cron) to retry registration."
+        )
+
+    def to_dict(self) -> dict:
+        """Return the public partial-failure contract without provider details."""
+        return {
+            "error": str(self),
+            "job_id": self.job["id"],
+            "job_saved": True,
+            "scheduler_registered": False,
+            "retry_create": False,
+        }
+
+
+def create_job_with_scheduler_registration(**kwargs) -> dict:
+    """Persist one job and register its first trigger with the active provider."""
+    from cron.jobs import create_job
+    from cron.scheduler_provider import resolve_cron_scheduler
+
+    job = create_job(**kwargs)
+    try:
+        resolve_cron_scheduler().register_job(job)
+    except Exception as exc:
+        raise CronSchedulerRegistrationError(job, exc) from exc
+    return job
 
 
 def tick(

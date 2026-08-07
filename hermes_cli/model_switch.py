@@ -2731,8 +2731,8 @@ def list_authenticated_providers(
             )
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(
+                    from hermes_cli.models import cached_fetch_api_models
+                    live_models = cached_fetch_api_models(
                         api_key,
                         api_url,
                         timeout=1.5 if for_picker else 5.0,  # picker: fail fast so a slow custom endpoint doesn't block /model
@@ -2801,9 +2801,9 @@ def list_authenticated_providers(
         _models = [current_model] if current_model else []
         if refresh or probe_current_custom_provider:
             try:
-                from hermes_cli.models import fetch_api_models
+                from hermes_cli.models import cached_fetch_api_models
 
-                _live_models = fetch_api_models(
+                _live_models = cached_fetch_api_models(
                     "",
                     str(current_base_url).strip().rstrip("/"),
                     timeout=1.5 if for_picker else 5.0,  # picker: fail fast on a slow current endpoint
@@ -3045,9 +3045,9 @@ def list_authenticated_providers(
             )
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
+                    from hermes_cli.models import cached_fetch_api_models
 
-                    live_models = fetch_api_models(
+                    live_models = cached_fetch_api_models(
                         api_key,
                         api_url,
                         timeout=1.5 if for_picker else 5.0,  # picker: fail fast so a slow custom endpoint doesn't block /model
