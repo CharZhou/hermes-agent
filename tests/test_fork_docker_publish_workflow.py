@@ -51,14 +51,51 @@ class TestForkDockerPublishWorkflow:
         content = self.WORKFLOW_PATH.read_text(encoding="utf-8")
         assert 'short_sha="${GITHUB_SHA::12}"' in content
         assert 'short_sha6="${GITHUB_SHA::6}"' in content
-        assert 'tag_sha_short=${IMAGE_NAME_LOWER}:${short_sha6}' in content
+        assert '-t "${IMAGE_NAME}:main"' in content
+        assert '-t "${IMAGE_NAME}:latest"' in content
+        assert '-t "${IMAGE_NAME}:sha-${short_sha}"' in content
+        assert '-t "${IMAGE_NAME}:${short_sha6}"' in content
+
+    def test_builds_both_linux_platforms(self):
+        parsed = yaml.safe_load(self.WORKFLOW_PATH.read_text(encoding="utf-8"))
+        build_job = parsed["jobs"]["build-and-publish"]
+        matrix = build_job["strategy"]["matrix"]["include"]
+
+        assert {entry["platform"] for entry in matrix} == {
+            "linux/amd64",
+            "linux/arm64",
+        }
+        assert {entry["arch"] for entry in matrix} == {"amd64", "arm64"}
+        assert build_job["strategy"]["fail-fast"] is False
+
+    def test_merges_architecture_digests_into_published_tags(self):
+        parsed = yaml.safe_load(self.WORKFLOW_PATH.read_text(encoding="utf-8"))
+        jobs = parsed["jobs"]
+        build_steps = jobs["build-and-publish"]["steps"]
+        build_content = "\n".join(step.get("run", "") for step in build_steps)
+        build_uses = "\n".join(step.get("uses", "") for step in build_steps)
+        build_with = "\n".join(str(step.get("with", {})) for step in build_steps)
+
+        assert "push-by-digest=true" in build_with
+        assert "actions/upload-artifact" in build_uses
+        assert "digest-${{ matrix.arch }}" in "\n".join(
+            step.get("with", {}).get("name", "") for step in build_steps
+        )
+        assert "docker run --rm" in build_content
+
+        merge_job = jobs["merge"]
+        assert merge_job["needs"] == ["build-and-publish"]
+        merge_content = "\n".join(
+            step.get("run", "") for step in merge_job["steps"]
+        )
+        assert "docker buildx imagetools create" in merge_content
+        assert "docker buildx imagetools inspect" in merge_content
 
     def test_no_overlay_variants_remain(self):
         """The fork publishes the plain upstream image: lazy backends install
         at runtime via HERMES_LAZY_INSTALL_TARGET, so no overlay layers."""
         content = self.WORKFLOW_PATH.read_text(encoding="utf-8")
         assert "aio" not in content
-        assert "matrix" not in content
         assert "fork-feishu" not in content
         assert not (REPO_ROOT / ".github" / "docker").exists()
         assert not (REPO_ROOT / ".github" / "actions" / "hermes-aio-smoke-test").exists()

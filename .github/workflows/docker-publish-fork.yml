@@ -14,7 +14,17 @@ env:
 
 jobs:
   build-and-publish:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
 
     steps:
@@ -41,19 +51,19 @@ jobs:
       # The fork ships no image overlays: lazy optional backends (feishu,
       # etc.) install themselves at first use into the durable data volume
       # via HERMES_LAZY_INSTALL_TARGET, which the upstream Dockerfile sets.
-      - name: Build image
+      - name: Build and push ${{ matrix.arch }} image
+        id: push
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: .
           file: Dockerfile
-          load: true
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          tags: ${{ steps.image.outputs.image_name }}:test
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
+          outputs: type=image,name=${{ steps.image.outputs.image_name }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Ensure /tmp/hermes-test is hermes-writable
         shell: bash
@@ -65,39 +75,101 @@ jobs:
       # publish job here has no Python test env, so run the same two
       # entrypoint checks inline.
       - name: Smoke test image
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_name }}@${{ steps.push.outputs.digest }}
         shell: bash
         run: |
           docker run --rm \
             -v /tmp/hermes-test:/opt/data \
-            "${{ steps.image.outputs.image_name }}:test" --help
+            "${IMAGE_REF}" --help
 
           docker run --rm \
             -v /tmp/hermes-test:/opt/data \
-            "${{ steps.image.outputs.image_name }}:test" dashboard --help
+            "${IMAGE_REF}" dashboard --help
 
-      - name: Compute image tags
-        id: tags
+      - name: Export image digest
         shell: bash
         run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [build-and-publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Download image digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Normalize image name
+        id: image
+        shell: bash
+        run: |
+          image_name_lower="$(printf '%s' "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          echo "image_name=${image_name_lower}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and inspect multi-architecture manifest
+        working-directory: /tmp/digests
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.image_name }}
+        run: |
+          set -euo pipefail
+
+          digest_files=(*)
+          if [ "${#digest_files[@]}" -ne 2 ]; then
+            echo "Expected exactly two architecture digests, found ${#digest_files[@]}" >&2
+            exit 1
+          fi
+
+          args=()
+          for digest_file in "${digest_files[@]}"; do
+            args+=("${IMAGE_NAME}@sha256:${digest_file}")
+          done
+
           short_sha="${GITHUB_SHA::12}"
           short_sha6="${GITHUB_SHA::6}"
-          {
-            echo "tag_main=${IMAGE_NAME_LOWER}:main"
-            echo "tag_latest=${IMAGE_NAME_LOWER}:latest"
-            echo "tag_sha=${IMAGE_NAME_LOWER}:sha-${short_sha}"
-            echo "tag_sha_short=${IMAGE_NAME_LOWER}:${short_sha6}"
-          } >> "$GITHUB_OUTPUT"
-        env:
-          IMAGE_NAME_LOWER: ${{ steps.image.outputs.image_name }}
+          tags=(
+            -t "${IMAGE_NAME}:main"
+            -t "${IMAGE_NAME}:latest"
+            -t "${IMAGE_NAME}:sha-${short_sha}"
+            -t "${IMAGE_NAME}:${short_sha6}"
+          )
 
-      - name: Tag and push image
-        shell: bash
-        run: |
-          for tag in \
-            "${{ steps.tags.outputs.tag_main }}" \
-            "${{ steps.tags.outputs.tag_latest }}" \
-            "${{ steps.tags.outputs.tag_sha }}" \
-            "${{ steps.tags.outputs.tag_sha_short }}"; do
-            docker tag "${{ steps.image.outputs.image_name }}:test" "${tag}"
-            docker push "${tag}"
+          for attempt in 1 2 3; do
+            if docker buildx imagetools create "${tags[@]}" "${args[@]}"; then
+              break
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::Manifest creation failed after 3 attempts"
+              exit 1
+            fi
+            echo "::warning::Manifest creation failed on attempt ${attempt}; retrying in 20s"
+            sleep 20
           done
+
+          docker buildx imagetools inspect "${IMAGE_NAME}:main"
