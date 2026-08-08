@@ -2611,8 +2611,18 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
         "max_tokens": max_tokens,
     }
+
+
+def _deep_merge_request_overrides(
+    base: Optional[dict], override: Optional[dict]
+) -> dict:
+    """Deep-merge request overrides with the second mapping taking precedence."""
+    from hermes_cli.config import _deep_merge
+
+    return _deep_merge(dict(base or {}), dict(override or {}))
 
 
 def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
@@ -2634,6 +2644,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
     }
 
 
@@ -2692,6 +2703,9 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "request_overrides": dict(
+                        runtime.get("request_overrides") or {}
+                    ),
                     "model": entry.get("model"),
                 }
             except Exception as fb_exc:
@@ -7041,6 +7055,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "api_mode": override.get("api_mode"),
                 "max_tokens": override.get("max_tokens"),
                 "credential_pool": override.get("credential_pool"),
+                "request_overrides": dict(
+                    override.get("request_overrides") or {}
+                ),
             }
             if override_runtime.get("api_key"):
                 if override_runtime.get("credential_pool") is None:
@@ -7190,6 +7207,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
+        base_request_overrides = dict(
+            runtime_kwargs.get("request_overrides") or {}
+        )
         route = {
             "model": model,
             "runtime": runtime,
@@ -7206,14 +7226,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = {}
+            route["request_overrides"] = base_request_overrides
             return route
 
         try:
             overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
             overrides = None
-        route["request_overrides"] = overrides or {}
+        route["request_overrides"] = _deep_merge_request_overrides(
+            base_request_overrides,
+            overrides or {},
+        )
         return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
@@ -23262,6 +23285,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["credential_pool"] = runtime.get("credential_pool")
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
+                runtime_request_overrides = runtime.get("request_overrides")
+                if isinstance(runtime_request_overrides, dict):
+                    override["request_overrides"] = dict(
+                        runtime_request_overrides
+                    )
             except Exception:
                 logger.debug(
                     "Credential re-resolution failed for persisted override "
@@ -23294,6 +23322,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
+        override_request_overrides = override.get("request_overrides")
+        if isinstance(override_request_overrides, dict):
+            runtime_kwargs["request_overrides"] = _deep_merge_request_overrides(
+                runtime_kwargs.get("request_overrides"),
+                override_request_overrides,
+            )
         if (
             runtime_kwargs.get("api_key")
             and runtime_kwargs.get("credential_pool") is None

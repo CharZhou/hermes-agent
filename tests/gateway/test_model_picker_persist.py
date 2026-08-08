@@ -76,6 +76,9 @@ def _fake_switch_result():
         api_key="sk-test",
         base_url="https://openrouter.ai/api/v1",
         api_mode="chat_completions",
+        request_overrides={
+            "extra_body": {"text": {"verbosity": "low"}},
+        },
         provider_label="OpenRouter",
         is_global=True,
     )
@@ -199,6 +202,25 @@ async def test_picker_tap_global_flag_persists(tmp_path, monkeypatch, seed_model
     assert "api_key" not in written["model"]
     assert "api_mode" not in written["model"]
     assert "context_length" not in written["model"]
+
+
+@pytest.mark.asyncio
+async def test_picker_tap_stores_request_overrides(tmp_path, monkeypatch):
+    adapter = _FakePickerAdapter()
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openrouter"},
+    )
+    runner = _make_runner(adapter)
+
+    confirmation = await _drive_picker(runner, _make_event("/model --session"))
+
+    assert confirmation is not None
+    session_key = runner._session_key_for_source(_make_event("/model").source)
+    assert runner._session_model_overrides[session_key]["request_overrides"] == {
+        "extra_body": {"text": {"verbosity": "low"}},
+    }
 
 
 @pytest.mark.asyncio

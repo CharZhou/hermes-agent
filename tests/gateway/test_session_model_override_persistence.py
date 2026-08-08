@@ -33,6 +33,9 @@ OVERRIDE = {
     "api_key": "sk-SUPER-SECRET-do-not-persist",
     "base_url": "https://api.openai.example/v1",
     "api_mode": "responses",
+    "request_overrides": {
+        "extra_body": {"text": {"verbosity": "low"}},
+    },
 }
 
 
@@ -111,6 +114,9 @@ def test_runner_rehydrates_override_after_restart(store_factory):
             "api_mode": "responses",
             "base_url": "https://api.openai.example/v1",
             "provider": "openai",
+            "request_overrides": {
+                "extra_body": {"text": {"verbosity": "low"}},
+            },
         },
     ):
         runner._rehydrate_session_model_override(session_key)
@@ -122,6 +128,9 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     # Credentials come from live resolution, never from disk.
     assert override["api_key"] == "sk-fresh-from-keychain"
     assert override["api_mode"] == "responses"
+    assert override["request_overrides"] == {
+        "extra_body": {"text": {"verbosity": "low"}},
+    }
 
 
 def test_sanitize_model_override():
