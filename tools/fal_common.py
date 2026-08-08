@@ -41,6 +41,16 @@ def import_fal_client() -> Any:
 
     Raises :class:`ImportError` if the package is genuinely unavailable.
     """
+    # Import first so an already-available SDK (including an injected test
+    # module or a managed runtime's preloaded dependency) never triggers the
+    # lazy-install path. The dependency check is only needed after a genuine
+    # import miss.
+    try:
+        import fal_client  # type: ignore  # noqa: WPS433 — intentionally lazy
+        return fal_client
+    except ImportError:
+        pass
+
     try:
         from tools.lazy_deps import ensure as _lazy_ensure
         _lazy_ensure("image.fal", prompt=False)
