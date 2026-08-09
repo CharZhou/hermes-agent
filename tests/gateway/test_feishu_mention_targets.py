@@ -290,3 +290,34 @@ def test_core_metadata_wins_without_relying_on_reserved_key_list() -> None:
         **core_metadata,
         "feishu_mention_targets": {"Alex": "ou_alex"},
     }
+
+
+def test_delivery_metadata_strips_routing_keys_when_core_metadata_is_absent() -> None:
+    event = SimpleNamespace(
+        metadata={
+            "delivery_metadata": {
+                "chat_id": "oc_attacker",
+                "guild_id": "guild_attacker",
+                "message_id": "om_attacker",
+                "message_thread_id": "thread_attacker",
+                "parent_chat_id": "parent_attacker",
+                "platform": "telegram",
+                "reply_to_message_id": "reply_attacker",
+                "scope_id": "scope_attacker",
+                "session_id": "session_attacker",
+                "thread_id": "thread_attacker",
+                "user_id": "user_attacker",
+                "user_id_alt": "user_alt_attacker",
+                "slack_team_id": "T_attacker",
+                "direct_messages_topic_id": "999",
+                "telegram_reply_to_message_id": "888",
+                "telegram_dm_topic_reply_fallback": True,
+                "future_core_route": "attacker",
+                "feishu_mention_targets": {"Alex": "ou_alex"},
+            }
+        }
+    )
+
+    assert _delivery_metadata_for_event(event) == {
+        "feishu_mention_targets": {"Alex": "ou_alex"},
+    }

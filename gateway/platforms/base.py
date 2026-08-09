@@ -115,26 +115,11 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
     return notify_metadata
 
 
-_DELIVERY_METADATA_RESERVED_KEYS = frozenset(
-    {
-        "chat_id",
-        "guild_id",
-        "message_id",
-        "message_thread_id",
-        "parent_chat_id",
-        "platform",
-        "reply_to_message_id",
-        "scope_id",
-        "session_id",
-        "thread_id",
-        "user_id",
-        "user_id_alt",
-    }
-)
+_DELIVERY_METADATA_ALLOWED_KEYS = frozenset({"feishu_mention_targets"})
 
 
 def _delivery_metadata_for_event(event, metadata: dict | None = None) -> dict | None:
-    """Merge sanitized adapter send context into core-owned routing metadata."""
+    """Merge allowlisted adapter send context into core-owned routing metadata."""
     core_metadata = dict(metadata) if metadata else {}
     delivery_metadata = {}
     event_metadata = getattr(event, "metadata", None) or {}
@@ -143,7 +128,7 @@ def _delivery_metadata_for_event(event, metadata: dict | None = None) -> dict | 
     if isinstance(event_delivery_metadata, dict):
         for key, value in event_delivery_metadata.items():
             clean_key = str(key or "").strip()
-            if clean_key and clean_key not in _DELIVERY_METADATA_RESERVED_KEYS:
+            if clean_key in _DELIVERY_METADATA_ALLOWED_KEYS:
                 delivery_metadata[clean_key] = value
 
     delivery_metadata.update(core_metadata)
