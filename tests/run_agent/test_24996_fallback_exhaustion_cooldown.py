@@ -39,7 +39,7 @@ def _make_agent(fallback_model=None):
         return agent
 
 
-def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
+def _mock_client(base_url="https://api.openai.com/v1", api_key="fb-key"):
     mock = MagicMock()
     mock.base_url = base_url
     mock.api_key = api_key
@@ -57,7 +57,7 @@ class TestExhaustionArmsCooldown:
         loaded runners when the three activation calls took longer than 1s.
         """
         fbs = [
-            {"provider": "openai", "model": "gpt-4o"},
+            {"provider": "openai-api", "model": "gpt-4o"},
             {"provider": "zai", "model": "glm-4.7"},
         ]
         agent = _make_agent(fallback_model=fbs)
@@ -91,7 +91,7 @@ class TestExhaustionArmsCooldown:
     def test_rate_limit_exhaustion_keeps_60s_cooldown(self):
         """A rate-limit failure already arms its own 60s cooldown; the short
         exhaustion window must not shrink it."""
-        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        fbs = [{"provider": "openai-api", "model": "gpt-4o"}]
         agent = _make_agent(fallback_model=fbs)
         agent._rate_limited_until = 0
         frozen = 1_000.0
@@ -114,7 +114,7 @@ class TestExhaustionArmsCooldown:
     def test_cooldown_never_shrinks_existing_window(self):
         """If a longer cooldown is already armed, exhaustion must not reduce
         it (we take the max)."""
-        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        fbs = [{"provider": "openai-api", "model": "gpt-4o"}]
         agent = _make_agent(fallback_model=fbs)
         frozen = 1_000.0
         far_future = frozen + 999
@@ -153,7 +153,7 @@ class TestRateLimitBackoffEscalation:
     def test_backoff_doubles_per_consecutive_rate_limit(self):
         """Each consecutive primary rate-limit doubles the cooldown:
         60s, then 120s, then 240s."""
-        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        fbs = [{"provider": "openai-api", "model": "gpt-4o"}]
         agent = _make_agent(fallback_model=fbs)
         agent._rate_limited_until = 0
         snapshot = (agent.provider, agent.model, agent.base_url)
@@ -177,7 +177,7 @@ class TestRateLimitBackoffEscalation:
     def test_backoff_caps_at_four_hours(self):
         """Escalation is capped at 14400s (4h) no matter how many
         consecutive rate-limits occurred."""
-        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        fbs = [{"provider": "openai-api", "model": "gpt-4o"}]
         agent = _make_agent(fallback_model=fbs)
         agent._rate_limited_until = 0
         # 60 * 2**10 = 61440s, far past the cap.
@@ -196,7 +196,7 @@ class TestRateLimitBackoffEscalation:
     def test_backoff_counter_resets_on_successful_primary_restore(self):
         """A successful restore_primary_runtime resets the backoff counter,
         so the next rate-limit starts back at the 60s base."""
-        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        fbs = [{"provider": "openai-api", "model": "gpt-4o"}]
         agent = _make_agent(fallback_model=fbs)
         snapshot = (agent.provider, agent.model, agent.base_url)
         frozen = 1_000.0

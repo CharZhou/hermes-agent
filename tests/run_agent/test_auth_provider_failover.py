@@ -40,7 +40,7 @@ def _make_agent(fallback_model=None):
         return agent
 
 
-def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
+def _mock_client(base_url="https://api.openai.com/v1", api_key="fb-key"):
     mock = MagicMock()
     mock.base_url = base_url
     mock.api_key = api_key
@@ -85,7 +85,7 @@ class TestAuthFailoverActivation:
         )
 
     def test_auth_failover_fires_when_chain_present(self):
-        agent = _make_agent(fallback_model=[{"provider": "openai", "model": "gpt-4o"}])
+        agent = _make_agent(fallback_model=[{"provider": "openai-api", "model": "gpt-4o"}])
         retry = TurnRetryState()
         classified = classify_api_error(_auth_error(401))
         assert self._should_failover(agent, classified, retry) is True
@@ -108,14 +108,14 @@ class TestAuthFailoverActivation:
         assert self._should_failover(agent, classified, retry) is False
 
     def test_guard_blocks_repeat_failover(self):
-        agent = _make_agent(fallback_model=[{"provider": "openai", "model": "gpt-4o"}])
+        agent = _make_agent(fallback_model=[{"provider": "openai-api", "model": "gpt-4o"}])
         retry = TurnRetryState()
         retry.auth_failover_attempted = True  # already escalated this attempt
         classified = classify_api_error(_auth_error(401))
         assert self._should_failover(agent, classified, retry) is False
 
     def test_non_auth_error_does_not_trigger_auth_failover(self):
-        agent = _make_agent(fallback_model=[{"provider": "openai", "model": "gpt-4o"}])
+        agent = _make_agent(fallback_model=[{"provider": "openai-api", "model": "gpt-4o"}])
         retry = TurnRetryState()
         err = Exception("Error code: 500 - internal server error")
         err.status_code = 500

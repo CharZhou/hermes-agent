@@ -76,7 +76,7 @@ def _make_fallback_agent(fallback_model):
         return agent
 
 
-def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
+def _mock_client(base_url="https://api.openai.com/v1", api_key="fb-key"):
     mock = MagicMock()
     mock.base_url = base_url
     mock.api_key = api_key
@@ -132,7 +132,7 @@ def test_switch_model_failure_does_not_reset_streak():
 def test_fallback_activation_resets_stale_streak():
     """Automatic provider fallback swaps to a different backend; the streak
     measured the OLD provider and must not wedge the new one."""
-    fbs = [{"provider": "openai", "model": "gpt-4o"}]
+    fbs = [{"provider": "openai-api", "model": "gpt-4o"}]
     agent = _make_fallback_agent(fallback_model=fbs)
     agent._consecutive_stale_streams = 7
     client = _mock_client()
@@ -145,8 +145,8 @@ def test_fallback_activation_resets_stale_streak():
         patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             return_value={
-                "provider": "openai",
-                "requested_provider": "openai",
+                "provider": "openai-api",
+                "requested_provider": "openai-api",
                 "model": "resolved",
                 "base_url": str(client.base_url),
                 "api_key": client.api_key,
