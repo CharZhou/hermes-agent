@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, _delivery_metadata_for_event
 from gateway.session import SessionSource
@@ -51,6 +53,41 @@ def test_registry_conflict_recovers_when_stale_observation_expires() -> None:
 
         with patch("plugins.platforms.feishu.adapter.time.time", return_value=100.0):
             adapter._update_mention_registry("oc_chat", {"Alex": {"ou_old"}})
+        with patch(
+            "plugins.platforms.feishu.adapter.time.time",
+            return_value=100.0 + (_FEISHU_MENTION_REGISTRY_TTL_SECONDS / 2),
+        ):
+            adapter._update_mention_registry("oc_chat", {"Alex": {"ou_new"}})
+            assert adapter._mention_targets_for_chat("oc_chat") == {}
+        with patch(
+            "plugins.platforms.feishu.adapter.time.time",
+            return_value=101.0 + _FEISHU_MENTION_REGISTRY_TTL_SECONDS,
+        ):
+            assert adapter._mention_targets_for_chat("oc_chat") == {"Alex": "ou_new"}
+
+
+@pytest.mark.parametrize(
+    "legacy_entry",
+    ["ou_old", {"open_id": "ou_old"}],
+)
+def test_legacy_registry_observation_expires_after_migration(legacy_entry) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        (home / "feishu_mention_targets.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "chats": {
+                        "oc_chat": {
+                            "targets": {"Alex": legacy_entry},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        with patch("plugins.platforms.feishu.adapter.time.time", return_value=100.0):
+            adapter = _adapter(home)
         with patch(
             "plugins.platforms.feishu.adapter.time.time",
             return_value=100.0 + (_FEISHU_MENTION_REGISTRY_TTL_SECONDS / 2),
@@ -224,5 +261,32 @@ def test_delivery_metadata_cannot_override_reserved_route_keys() -> None:
     ) == {
         "thread_id": "omt_core",
         "reply_to_message_id": "om_core",
+        "feishu_mention_targets": {"Alex": "ou_alex"},
+    }
+
+
+def test_core_metadata_wins_without_relying_on_reserved_key_list() -> None:
+    event = SimpleNamespace(
+        metadata={
+            "delivery_metadata": {
+                "slack_team_id": "T_attacker",
+                "direct_messages_topic_id": "999",
+                "telegram_reply_to_message_id": "888",
+                "telegram_dm_topic_reply_fallback": False,
+                "future_core_route": "attacker",
+                "feishu_mention_targets": {"Alex": "ou_alex"},
+            }
+        }
+    )
+    core_metadata = {
+        "slack_team_id": "T_core",
+        "direct_messages_topic_id": "123",
+        "telegram_reply_to_message_id": "456",
+        "telegram_dm_topic_reply_fallback": True,
+        "future_core_route": "core",
+    }
+
+    assert _delivery_metadata_for_event(event, core_metadata) == {
+        **core_metadata,
         "feishu_mention_targets": {"Alex": "ou_alex"},
     }

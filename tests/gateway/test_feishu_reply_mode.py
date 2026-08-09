@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -214,3 +215,113 @@ def test_send_default_mode_still_replies_in_feishu_thread() -> None:
     assert result.success
     assert captured["request"].message_id == "om_parent"
     assert captured["request"].request_body.reply_in_thread is True
+
+
+@patch.dict(os.environ, {}, clear=True)
+def test_uploaded_document_flat_mode_uses_main_chat_without_reply_anchor() -> None:
+    adapter = FeishuAdapter(PlatformConfig(reply_to_mode="off"))
+    captured = {"create": [], "reply": []}
+
+    class _FileAPI:
+        def create(self, request):
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(file_key="file_123"),
+            )
+
+    class _MessageAPI:
+        def create(self, request):
+            captured["create"].append(request)
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(message_id="om_flat_file"),
+            )
+
+        def reply(self, request):
+            captured["reply"].append(request)
+            raise AssertionError("flat media delivery must not use reply API")
+
+    adapter._client = SimpleNamespace(
+        im=SimpleNamespace(
+            v1=SimpleNamespace(file=_FileAPI(), message=_MessageAPI())
+        )
+    )
+
+    with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as temp_file:
+        temp_file.write(b"%PDF-1.4 test")
+        file_path = temp_file.name
+    try:
+        result = asyncio.run(
+            adapter.send_document(
+                chat_id="oc_chat",
+                file_path=file_path,
+                reply_to="om_parent",
+                metadata={
+                    "thread_id": "omt_thread",
+                    "reply_to_message_id": "om_trigger",
+                },
+            )
+        )
+    finally:
+        os.unlink(file_path)
+
+    assert result.success
+    assert captured["reply"] == []
+    request = captured["create"][0]
+    assert request.receive_id_type == "chat_id"
+    assert request.request_body.receive_id == "oc_chat"
+
+
+@patch.dict(os.environ, {}, clear=True)
+def test_uploaded_document_default_mode_keeps_native_thread_reply() -> None:
+    adapter = FeishuAdapter(PlatformConfig(reply_to_mode="first"))
+    captured = {"create": [], "reply": []}
+
+    class _FileAPI:
+        def create(self, request):
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(file_key="file_123"),
+            )
+
+    class _MessageAPI:
+        def create(self, request):
+            captured["create"].append(request)
+            raise AssertionError("native media delivery should use reply API")
+
+        def reply(self, request):
+            captured["reply"].append(request)
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(message_id="om_thread_file"),
+            )
+
+    adapter._client = SimpleNamespace(
+        im=SimpleNamespace(
+            v1=SimpleNamespace(file=_FileAPI(), message=_MessageAPI())
+        )
+    )
+
+    with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as temp_file:
+        temp_file.write(b"%PDF-1.4 test")
+        file_path = temp_file.name
+    try:
+        result = asyncio.run(
+            adapter.send_document(
+                chat_id="oc_chat",
+                file_path=file_path,
+                reply_to="om_parent",
+                metadata={
+                    "thread_id": "omt_thread",
+                    "reply_to_message_id": "om_trigger",
+                },
+            )
+        )
+    finally:
+        os.unlink(file_path)
+
+    assert result.success
+    assert captured["create"] == []
+    request = captured["reply"][0]
+    assert request.message_id == "om_parent"
+    assert request.request_body.reply_in_thread is True

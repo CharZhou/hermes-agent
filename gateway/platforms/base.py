@@ -135,7 +135,8 @@ _DELIVERY_METADATA_RESERVED_KEYS = frozenset(
 
 def _delivery_metadata_for_event(event, metadata: dict | None = None) -> dict | None:
     """Merge sanitized adapter send context into core-owned routing metadata."""
-    delivery_metadata = dict(metadata) if metadata else {}
+    core_metadata = dict(metadata) if metadata else {}
+    delivery_metadata = {}
     event_metadata = getattr(event, "metadata", None) or {}
     event_delivery_metadata = event_metadata.get("delivery_metadata")
 
@@ -145,6 +146,7 @@ def _delivery_metadata_for_event(event, metadata: dict | None = None) -> dict | 
             if clean_key and clean_key not in _DELIVERY_METADATA_RESERVED_KEYS:
                 delivery_metadata[clean_key] = value
 
+    delivery_metadata.update(core_metadata)
     return delivery_metadata or None
 
 

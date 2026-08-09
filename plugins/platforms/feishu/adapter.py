@@ -4841,6 +4841,7 @@ class FeishuAdapter(BasePlatformAdapter):
         }
         if not isinstance(raw, dict) or not isinstance(raw.get("chats"), dict):
             return registry
+        migration_time = time.time()
 
         for raw_chat_id, raw_chat in raw["chats"].items():
             chat_id = str(raw_chat_id or "").strip()
@@ -4849,6 +4850,11 @@ class FeishuAdapter(BasePlatformAdapter):
             raw_targets = raw_chat.get("targets", raw_chat)
             if not isinstance(raw_targets, dict):
                 continue
+            try:
+                chat_updated_at = float(raw_chat.get("updated_at") or 0.0)
+            except (TypeError, ValueError):
+                chat_updated_at = 0.0
+            migration_timestamp = chat_updated_at if chat_updated_at > 0 else migration_time
             targets: Dict[str, Dict[str, Any]] = {}
             for raw_name, raw_entry in raw_targets.items():
                 name = str(raw_name or "").strip()
@@ -4858,8 +4864,13 @@ class FeishuAdapter(BasePlatformAdapter):
                 if isinstance(raw_entry, str):
                     open_id = raw_entry.strip()
                     if open_id:
-                        observations[open_id] = 0.0
+                        observations[open_id] = migration_timestamp
                 elif isinstance(raw_entry, dict):
+                    try:
+                        updated_at = float(raw_entry.get("updated_at") or 0.0)
+                    except (TypeError, ValueError):
+                        updated_at = 0.0
+                    entry_timestamp = updated_at if updated_at > 0 else migration_timestamp
                     raw_observations = raw_entry.get("observations")
                     if isinstance(raw_observations, dict):
                         for raw_open_id, raw_seen_at in raw_observations.items():
@@ -4867,24 +4878,24 @@ class FeishuAdapter(BasePlatformAdapter):
                             if not open_id:
                                 continue
                             try:
-                                observations[open_id] = float(raw_seen_at or 0.0)
+                                seen_at = float(raw_seen_at or 0.0)
                             except (TypeError, ValueError):
                                 continue
+                            observations[open_id] = seen_at if seen_at > 0 else entry_timestamp
                     else:
-                        updated_at = float(raw_entry.get("updated_at") or 0.0)
                         open_id = str(raw_entry.get("open_id") or "").strip()
                         if open_id:
-                            observations[open_id] = updated_at
+                            observations[open_id] = entry_timestamp
                         for item in raw_entry.get("open_ids", []) or []:
                             candidate = str(item or "").strip()
                             if candidate:
-                                observations[candidate] = updated_at
+                                observations[candidate] = entry_timestamp
                 if observations:
                     targets[name] = {"observations": observations}
             if targets:
                 registry["chats"][chat_id] = {
                     "targets": targets,
-                    "updated_at": float(raw_chat.get("updated_at") or 0.0),
+                    "updated_at": chat_updated_at or migration_time,
                 }
         return registry
 
