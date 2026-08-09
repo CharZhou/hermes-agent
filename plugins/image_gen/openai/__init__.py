@@ -38,6 +38,7 @@ from agent.image_gen_provider import (
     save_url_image,
     success_response,
 )
+from hermes_cli.providers import is_official_openai_host
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,65 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
 
 
+def _openai_config() -> Dict[str, Any]:
+    cfg = _load_openai_config()
+    value = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
+    return value if isinstance(value, dict) else {}
+
+
+def _resolve_base_url() -> Optional[str]:
+    """Return a normalized configured image endpoint, if any."""
+    value = _openai_config().get("base_url")
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().rstrip("/")
+    return cleaned or None
+
+
+def _resolve_api_key(base_url: Optional[str] = None) -> Optional[str]:
+    """Resolve credentials without leaking the global key to custom hosts."""
+    endpoint = base_url if base_url is not None else _resolve_base_url()
+    official = endpoint is None or is_official_openai_host(endpoint)
+    key_env: Optional[str] = None
+    config = _openai_config()
+    for field in ("key_env", "api_key_env"):
+        value = config.get(field)
+        if isinstance(value, str) and value.strip():
+            key_env = value.strip()
+            break
+    if not official and not key_env:
+        return None
+
+    def _secret(name: str) -> Optional[str]:
+        try:
+            value = get_secret(name)
+        except Exception as exc:
+            logger.debug("Could not resolve OpenAI image credential %s: %s", name, exc)
+            return None
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    if key_env:
+        value = _secret(key_env)
+        if value:
+            return value
+        if not official:
+            return None
+    return _secret("OPENAI_API_KEY")
+
+
+def _credential_error(base_url: Optional[str]) -> str:
+    if base_url is not None and not is_official_openai_host(base_url):
+        return (
+            "Custom OpenAI image endpoint requires a non-empty `key_env` or "
+            "`api_key_env` binding in `image_gen.openai`; plain API keys in "
+            "config are not supported."
+        )
+    return (
+        "OPENAI_API_KEY not set. Run `hermes tools` → Image Generation → "
+        "OpenAI to configure, or `hermes setup` to add the key."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Source-image loading (for image-to-image / edit)
 # ---------------------------------------------------------------------------
@@ -174,7 +234,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return "OpenAI"
 
     def is_available(self) -> bool:
-        if not get_secret("OPENAI_API_KEY"):
+        if not _resolve_api_key(_resolve_base_url()):
             return False
         try:
             import openai  # noqa: F401
@@ -236,14 +296,11 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        api_key = get_secret("OPENAI_API_KEY")
+        base_url = _resolve_base_url()
+        api_key = _resolve_api_key(base_url)
         if not api_key:
             return error_response(
-                error=(
-                    "OPENAI_API_KEY not set. Run `hermes tools` → Image "
-                    "Generation → OpenAI to configure, or `hermes setup` "
-                    "to add the key."
-                ),
+                error=_credential_error(base_url),
                 error_type="auth_required",
                 provider="openai",
                 aspect_ratio=aspect,
@@ -272,7 +329,10 @@ class OpenAIImageGenProvider(ImageGenProvider):
         is_edit = bool(sources)
         modality = "image" if is_edit else "text"
 
-        client = openai.OpenAI(api_key=api_key)
+        client_kwargs: Dict[str, Any] = {"api_key": api_key}
+        if base_url is not None:
+            client_kwargs["base_url"] = base_url
+        client = openai.OpenAI(**client_kwargs)
 
         if is_edit:
             # images.edit() expects file-like objects. Download/read each

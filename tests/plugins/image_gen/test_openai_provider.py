@@ -144,6 +144,30 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "auth_required"
 
+    def test_custom_endpoint_rejects_global_openai_key_without_binding(
+        self, provider, monkeypatch, tmp_path
+    ):
+        """A proxy must never receive the process-global OpenAI credential."""
+        import yaml
+
+        monkeypatch.setenv("OPENAI_API_KEY", "global-secret")
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "image_gen": {
+                        "openai": {"base_url": "https://proxy.example/v1"}
+                    }
+                }
+            )
+        )
+        fake_openai = MagicMock()
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "auth_required"
+        fake_openai.OpenAI.assert_not_called()
+
     def test_b64_saves_to_cache(self, provider, tmp_path):
         png_bytes = bytes.fromhex(_PNG_HEX)
         fake_client = MagicMock()
@@ -170,6 +194,132 @@ class TestGenerate:
         assert call_kwargs["size"] == "1536x1024"
         # gpt-image-2 rejects response_format — we must NOT send it.
         assert "response_format" not in call_kwargs
+
+    def test_official_regional_endpoint_uses_global_fallback(self, provider, tmp_path):
+        import yaml
+
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"image_gen": {"openai": {"base_url": "https://us.api.openai.com/v1/"}}}
+            )
+        )
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.return_value = fake_client
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert fake_openai.OpenAI.call_args.kwargs == {
+            "api_key": "test-key",
+            "base_url": "https://us.api.openai.com/v1",
+        }
+
+    @pytest.mark.parametrize("key_env", ["MISSING_IMAGE_KEY", ""])
+    def test_official_endpoint_falls_back_when_configured_key_env_unavailable(
+        self, provider, tmp_path, key_env
+    ):
+        import yaml
+
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "image_gen": {
+                        "openai": {
+                            "base_url": "https://api.openai.com/v1",
+                            "key_env": key_env,
+                        }
+                    }
+                }
+            )
+        )
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.return_value = fake_client
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert fake_openai.OpenAI.call_args.kwargs["api_key"] == "test-key"
+
+    def test_custom_endpoint_with_explicit_key_binding(self, provider, monkeypatch, tmp_path):
+        import yaml
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("CUSTOM_IMAGE_KEY", "custom-image-key")
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "image_gen": {
+                        "openai": {
+                            "base_url": "https://proxy.example/v1/",
+                            "key_env": "CUSTOM_IMAGE_KEY",
+                        }
+                    }
+                }
+            )
+        )
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.return_value = fake_client
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert fake_openai.OpenAI.call_args.kwargs == {
+            "api_key": "custom-image-key",
+            "base_url": "https://proxy.example/v1",
+        }
+
+    def test_custom_endpoint_missing_bound_secret_rejected(self, monkeypatch, tmp_path):
+        import yaml
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "image_gen": {
+                        "openai": {
+                            "base_url": "https://proxy.example/v1",
+                            "key_env": "MISSING_IMAGE_KEY",
+                        }
+                    }
+                }
+            )
+        )
+        fake_openai = MagicMock()
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = openai_plugin.OpenAIImageGenProvider().generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "auth_required"
+        fake_openai.OpenAI.assert_not_called()
+
+    def test_spoofed_openai_host_requires_explicit_binding(self, provider, tmp_path):
+        import yaml
+
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "image_gen": {
+                        "openai": {"base_url": "https://api.openai.com.attacker.test/v1"}
+                    }
+                }
+            )
+        )
+        fake_openai = MagicMock()
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "auth_required"
+        fake_openai.OpenAI.assert_not_called()
 
     @pytest.mark.parametrize("tier,expected_quality", [
         ("gpt-image-2-low", "low"),
@@ -239,4 +389,3 @@ class TestGenerate:
         assert result["image"].startswith("/")
         assert "example.com" not in result["image"]
         mock_save_url.assert_called_once()
-
