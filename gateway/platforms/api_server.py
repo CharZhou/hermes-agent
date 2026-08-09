@@ -6082,6 +6082,7 @@ class APIServerAdapter(BasePlatformAdapter):
         chat_id: str = "",
         session_key: str = "",
         session_id: str = "",
+        run_id: str = "",
     ) -> list:
         """Bind session contextvars for an API-server agent run.
 
@@ -6105,6 +6106,7 @@ class APIServerAdapter(BasePlatformAdapter):
             chat_id=chat_id,
             session_key=session_key,
             session_id=session_id,
+            run_id=run_id,
             async_delivery=False,
             cron_session="",
         )
@@ -6685,8 +6687,9 @@ class APIServerAdapter(BasePlatformAdapter):
                                 # background delegations stay forced-sync
                                 # (no wake target).
                                 chat_id=session_id or "",
-                                session_key=approval_session_key,
+                                session_key=gateway_session_key or session_id or "",
                                 session_id=session_id or "",
+                                run_id=run_id,
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
                             # /v1/runs runs its own agent lifecycle (no

@@ -81,6 +81,7 @@ _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNS
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
 _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
+_RUN_ID: ContextVar = ContextVar("HERMES_RUN_ID", default=_UNSET)
 # In-process UI session/window id for multi-session desktop/TUI hosts. This is
 # intentionally separate from HERMES_SESSION_ID: the latter is the durable
 # conversation/session-db id, while the UI id is the live frontend tab/window
@@ -138,6 +139,7 @@ _VAR_MAP = {
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_ID": _SESSION_ID,
+    "HERMES_RUN_ID": _RUN_ID,
     "HERMES_UI_SESSION_ID": _SESSION_UI_SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
     "HERMES_SESSION_PROFILE": _SESSION_PROFILE,
@@ -203,6 +205,20 @@ def scoped_current_session_id(session_id: str | None = None) -> Iterator[None]:
         _SESSION_ID.set(previous)
 
 
+@contextmanager
+def scoped_session_platform(platform: str | None) -> Iterator[None]:
+    """Bind a real turn platform when no session surface is already bound."""
+    current = _SESSION_PLATFORM.get()
+    token = None
+    if current in (_UNSET, "") and platform and platform != "subagent":
+        token = _SESSION_PLATFORM.set(platform)
+    try:
+        yield
+    finally:
+        if token is not None:
+            _SESSION_PLATFORM.reset(token)
+
+
 def set_session_vars(
     platform: str = "",
     source: str = "",
@@ -220,6 +236,7 @@ def set_session_vars(
     async_delivery: bool = True,
     ui_session_id: str = "",
     cron_session: Any = _UNSET,
+    run_id: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -256,6 +273,7 @@ def set_session_vars(
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
         _SESSION_ID.set(session_id),
+        _RUN_ID.set(run_id),
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
@@ -293,6 +311,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_NAME,
         _SESSION_KEY,
         _SESSION_ID,
+        _RUN_ID,
         _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,
         _SESSION_PROFILE,

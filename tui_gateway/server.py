@@ -3177,6 +3177,7 @@ def _set_session_context(
                     )
                     break
         return set_session_vars(
+            platform=source,
             session_key=session_key,
             session_id=session_id,
             source=source,
@@ -3583,28 +3584,7 @@ def _resolve_model() -> str:
 
 
 def _resolve_session_platform() -> str:
-    """Resolve the platform tag for a tui_gateway-routed session.
-
-    The desktop app's chat panel and the standalone TUI both speak to this
-    gateway; without a branch they all get stamped ``platform="tui"``,
-    which makes the agent think it's talking to a terminal user. That
-    mis-tag is the root cause of the desktop chat agent suggesting
-    TUI-only slash commands (``/reload-mcp``, …) to chat-panel users.
-
-    Resolution:
-      * ``HERMES_DESKTOP=1`` and ``HERMES_DESKTOP_TERMINAL`` unset → "desktop"
-        (the chat-panel backend — a graphical React surface, not a terminal).
-      * ``HERMES_DESKTOP_TERMINAL=1`` → "tui"
-        (``hermes --tui`` running in the desktop's embedded terminal pane;
-        it IS a TUI, just embedded. The clarifier attached to the tui hint
-        in system_prompt.py tells the agent about the embedding.)
-      * neither set → "tui"
-        (standalone ``hermes --tui``.)
-    """
-    if is_truthy_value(os.environ.get("HERMES_DESKTOP")) and not is_truthy_value(
-        os.environ.get("HERMES_DESKTOP_TERMINAL")
-    ):
-        return "desktop"
+    """Return the fallback for clients that omit their session source."""
     return "tui"
 
 
@@ -3613,8 +3593,7 @@ def _resolve_session_source(explicit: str | None) -> str:
 
     A caller that explicitly passes ``source`` (e.g. a plugin session tagged
     ``"telegram"``) keeps its value. Only an empty/None ``source`` falls back
-    to the env-resolved platform — so env-driven resolution never silently
-    rewrites a caller's intent.
+    to the standalone TUI.
     """
     if explicit:
         return explicit

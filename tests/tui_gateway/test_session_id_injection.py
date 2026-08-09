@@ -70,3 +70,16 @@ def test_set_session_context_falls_back_to_session_key(monkeypatch):
     assert get_session_env("HERMES_SESSION_ID") == "skey-xyz"
 
 
+def test_set_session_context_binds_real_source_as_platform(monkeypatch):
+    _install_session(
+        monkeypatch,
+        session_key="desktop-key",
+        agent_session_id="desktop-session",
+        source="desktop",
+    )
+
+    server._set_session_context("desktop-key")
+
+    assert get_session_env("HERMES_SESSION_SOURCE") == "desktop"
+    assert get_session_env("HERMES_SESSION_PLATFORM") == "desktop"
+

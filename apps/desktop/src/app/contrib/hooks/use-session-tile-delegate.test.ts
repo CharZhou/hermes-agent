@@ -77,6 +77,7 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(requestGateway).toHaveBeenCalledWith('session.resume', {
       session_id: 'stored-x',
       cols: 96,
+      source: 'desktop',
       profile: 'ai-engineer',
       omit_messages: true
     })
@@ -95,6 +96,7 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(requestGateway).toHaveBeenCalledWith('session.resume', {
       session_id: 'stored-y',
       cols: 96,
+      source: 'desktop',
       profile: 'default',
       omit_messages: true
     })
