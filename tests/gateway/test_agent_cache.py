@@ -69,6 +69,70 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt2, ["hermes-telegram"], "")
         assert sig1 != sig2
 
+    @pytest.mark.parametrize(
+        ("field", "before", "after"),
+        [
+            ("responses_transport", "sse", "auto"),
+            (
+                "responses_ws_url",
+                "wss://relay.example/one",
+                "wss://relay.example/two",
+            ),
+            (
+                "responses_transport_provider",
+                "custom:one",
+                "custom:two",
+            ),
+        ],
+    )
+    def test_responses_transport_identity_changes_signature(
+        self, field, before, after
+    ):
+        from gateway.run import GatewayRunner
+
+        runtime = {
+            "api_key": "sk-test",
+            "base_url": "https://relay.example/v1",
+            "provider": "custom:relay",
+            "api_mode": "codex_responses",
+            "responses_transport": "auto",
+            "responses_ws_url": "wss://relay.example/responses",
+            "responses_transport_provider": "custom:relay",
+        }
+        first = dict(runtime, **{field: before})
+        second = dict(runtime, **{field: after})
+
+        sig1 = GatewayRunner._agent_config_signature("gpt-5", first, [], "")
+        sig2 = GatewayRunner._agent_config_signature("gpt-5", second, [], "")
+
+        assert sig1 != sig2
+
+    def test_mutable_request_overrides_do_not_change_signature(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {
+            "api_key": "sk-test",
+            "base_url": "https://relay.example/v1",
+            "provider": "custom:relay",
+            "api_mode": "codex_responses",
+            "responses_transport": "auto",
+            "responses_ws_url": "wss://relay.example/responses",
+            "responses_transport_provider": "custom:relay",
+        }
+        first = dict(
+            runtime,
+            request_overrides={"extra_body": {"metadata": {"turn": 1}}},
+        )
+        second = dict(
+            runtime,
+            request_overrides={"extra_body": {"metadata": {"turn": 2}}},
+        )
+
+        sig1 = GatewayRunner._agent_config_signature("gpt-5", first, [], "")
+        sig2 = GatewayRunner._agent_config_signature("gpt-5", second, [], "")
+
+        assert sig1 == sig2
+
 
     # ---------------------------------------------------------------
     # cache_keys (compression/context config cache-busting)
@@ -1061,4 +1125,3 @@ class TestCrossProcessInvalidationDefersCleanup:
         # Stale entry was popped, hard-teardown path never used.
         assert "telegram:s1" not in runner._agent_cache
         runner._cleanup_agent_resources.assert_not_called()
-

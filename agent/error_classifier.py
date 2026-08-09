@@ -718,6 +718,26 @@ def classify_api_error(
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
 
+    # Generic custom-provider Responses WebSocket transport errors. Preserve
+    # their replay semantics: only NotStarted may retry/fallback. Invocation
+    # of websocket.send() is irrevocable even when the call itself raises.
+    if error_type in {
+        "GenericWsNotStartedError",
+        "GenericWsStartedError",
+        "GenericWsRejectedError",
+    }:
+        if error_type == "GenericWsNotStartedError":
+            return _result(
+                FailoverReason.timeout,
+                retryable=bool(getattr(error, "retryable", True)),
+                should_fallback=True,
+            )
+        return _result(
+            FailoverReason.server_error,
+            retryable=False,
+            should_fallback=False,
+        )
+
     # Provider content-policy / safety-filter block. The provider has made a
     # deterministic refusal decision about THIS prompt — retrying unchanged
     # just reproduces the same refusal and burns paid attempts. Must run

@@ -76,6 +76,9 @@ def _fake_switch_result():
         api_key="sk-test",
         base_url="https://openrouter.ai/api/v1",
         api_mode="chat_completions",
+        responses_transport="auto",
+        responses_ws_url="wss://relay.example.test/responses",
+        responses_transport_provider="custom:relay",
         request_overrides={
             "extra_body": {"text": {"verbosity": "low"}},
         },
@@ -221,6 +224,26 @@ async def test_picker_tap_stores_request_overrides(tmp_path, monkeypatch):
     assert runner._session_model_overrides[session_key]["request_overrides"] == {
         "extra_body": {"text": {"verbosity": "low"}},
     }
+
+
+@pytest.mark.asyncio
+async def test_picker_tap_stores_responses_transport(tmp_path, monkeypatch):
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openrouter"},
+    )
+    adapter = _FakePickerAdapter()
+    runner = _make_runner(adapter)
+
+    confirmation = await _drive_picker(runner, _make_event("/model --session"))
+
+    assert "gpt-5.5" in confirmation
+    session_key = runner._session_key_for_source(_make_event("").source)
+    override = runner._session_model_overrides[session_key]
+    assert override["responses_transport"] == "auto"
+    assert override["responses_ws_url"] == "wss://relay.example.test/responses"
+    assert override["responses_transport_provider"] == "custom:relay"
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,10 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.codex_responses_ws_transport import (
+    GenericWsRejectedError,
+    GenericWsStartedError,
+)
 from agent.conversation_compression import (
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
@@ -4001,6 +4005,10 @@ def run_conversation(
                     getattr(agent, "_vision_supported", True)
                     and _looks_like_image_rejection
                     and _status_ok
+                    and not isinstance(
+                        api_error,
+                        (GenericWsStartedError, GenericWsRejectedError),
+                    )
                 ):
                     agent._vision_supported = False
                     _imgs_removed = _strip_images_from_messages(messages)
@@ -5381,14 +5389,14 @@ def run_conversation(
                     # exists; otherwise "trying fallback..." is a lie and the
                     # session looks like it's recovering when it's about to
                     # abort silently (#35314, #17446).
-                    if agent._has_pending_fallback():
+                    if classified.should_fallback and agent._has_pending_fallback():
                         if classified.reason == FailoverReason.content_policy_blocked:
                             agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
                         elif classified.reason == FailoverReason.ssl_cert_verification:
                             agent._buffer_status("⚠️ TLS certificate verification failed — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if classified.should_fallback and agent._try_activate_fallback():
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0

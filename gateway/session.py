@@ -750,7 +750,14 @@ def build_session_context_prompt(
 # provider resolution) is intentionally excluded: credentials must NEVER be
 # written to sessions.json.  On rehydration after a gateway restart the
 # runner re-resolves credentials via the normal runtime provider resolution.
-PERSISTABLE_MODEL_OVERRIDE_KEYS = ("model", "provider", "base_url")
+PERSISTABLE_MODEL_OVERRIDE_KEYS = (
+    "model",
+    "provider",
+    "base_url",
+    "responses_transport",
+    "responses_ws_url",
+    "responses_transport_provider",
+)
 
 
 def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
@@ -859,12 +866,12 @@ class SessionEntry:
     active_turn_token: Optional[str] = None
     active_turn_started_at: Optional[datetime] = None
 
-    # Session-scoped /model override (model/provider/base_url ONLY — never
-    # credentials).  ``_session_model_overrides`` in the gateway runner is
+    # Session-scoped /model override (routing metadata only, never
+    # credentials). ``_session_model_overrides`` in the gateway runner is
     # in-memory, so before this field a gateway restart silently reverted
-    # every session to the global default model.  api_key/api_mode are
-    # re-resolved through the normal runtime provider resolution when the
-    # override is rehydrated after a restart and are never written to disk
+    # every session to the global default model. api_key/api_mode are
+    # re-resolved through normal provider resolution and never written to disk;
+    # non-secret Responses transport identity is persisted with the route
     # (see sanitize_model_override / SessionStore.set_model_override).
     model_override: Optional[Dict[str, str]] = None
 
@@ -2801,7 +2808,7 @@ class SessionStore:
     ) -> None:
         """Persist (or clear) the session-scoped /model override.
 
-        Only non-secret keys (model/provider/base_url — see
+        Only non-secret routing keys (see
         ``sanitize_model_override``) are written; ``api_key``/``api_mode``
         are re-resolved at rehydration time via the normal runtime provider
         resolution.  Pass ``None`` (or a dict with no persistable values)

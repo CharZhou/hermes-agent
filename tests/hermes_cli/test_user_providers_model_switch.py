@@ -402,6 +402,102 @@ def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
 
 
 
+def test_named_custom_runtime_lifts_responses_websocket_settings(monkeypatch):
+    config = {
+        "providers": {
+            "sub2api-codex": {
+                "api": "https://relay.example.com/v1",
+                "api_key": "test-key",
+                "default_model": "gpt-5",
+                "transport": "codex_responses",
+                "responses_transport": "auto",
+                "responses_ws_url": "wss://relay.example.com/ws/responses",
+            },
+        },
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    runtime = rp._resolve_named_custom_runtime(
+        requested_provider="custom:sub2api-codex",
+    )
+
+    assert runtime is not None
+    assert runtime["responses_transport"] == "auto"
+    assert runtime["responses_ws_url"] == "wss://relay.example.com/ws/responses"
+    assert runtime["responses_transport_provider"] == "custom:sub2api-codex"
+
+
+def test_legacy_custom_provider_runtime_lifts_responses_websocket_settings(monkeypatch):
+    config = {
+        "custom_providers": [
+            {
+                "name": "sub2api-codex",
+                "base_url": "https://relay.example.com/v1",
+                "api_key": "test-key",
+                "model": "gpt-5",
+                "api_mode": "codex_responses",
+                "responses_transport": "websocket",
+                "responses_ws_url": "wss://relay.example.com/ws/responses",
+            },
+        ],
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    runtime = rp._resolve_named_custom_runtime(
+        requested_provider="custom:sub2api-codex",
+    )
+
+    assert runtime is not None
+    assert runtime["responses_transport"] == "websocket"
+    assert runtime["responses_ws_url"] == "wss://relay.example.com/ws/responses"
+    assert runtime["responses_transport_provider"] == "custom:sub2api-codex"
+
+
+def test_model_switch_result_carries_named_custom_responses_transport(monkeypatch):
+    config = {
+        "sub2api-codex": {
+            "name": "sub2api-codex",
+            "api": "https://relay.example.com/v1",
+            "api_key": "test-key",
+            "default_model": "gpt-5",
+            "transport": "codex_responses",
+            "responses_transport": "auto",
+            "responses_ws_url": "wss://relay.example.com/ws/responses",
+        }
+    }
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *_args, **_kwargs: {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
+        },
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *_args: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {"providers": config},
+    )
+
+    result = switch_model(
+        raw_input="gpt-5",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="sub2api-codex",
+        user_providers=config,
+    )
+
+    assert result.success is True
+    assert result.responses_transport == "auto"
+    assert result.responses_ws_url == "wss://relay.example.com/ws/responses"
+    assert result.responses_transport_provider == "custom:sub2api-codex"
+
+
 # =============================================================================
 # Regression: user_providers override for private models not listed by /v1/models
 # =============================================================================

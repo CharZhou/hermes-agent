@@ -1317,6 +1317,12 @@ def try_recover_primary_transport(
         agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]
         agent.api_mode = rt["api_mode"]
+        agent.responses_transport = rt.get("responses_transport", "sse")
+        agent.responses_ws_url = rt.get("responses_ws_url")
+        agent.responses_transport_provider = rt.get(
+            "responses_transport_provider"
+        )
+        agent._generic_ws_auto_disabled_for = None
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
@@ -1547,6 +1553,12 @@ def restore_primary_runtime(agent) -> bool:
         agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
         agent.api_mode = rt["api_mode"]
+        agent.responses_transport = rt.get("responses_transport", "sse")
+        agent.responses_ws_url = rt.get("responses_ws_url")
+        agent.responses_transport_provider = rt.get(
+            "responses_transport_provider"
+        )
+        agent._generic_ws_auto_disabled_for = None
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
@@ -2368,7 +2380,17 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+def switch_model(
+    agent,
+    new_model,
+    new_provider,
+    api_key='',
+    base_url='',
+    api_mode='',
+    responses_transport='sse',
+    responses_ws_url=None,
+    responses_transport_provider=None,
+):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -2428,6 +2450,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "base_url",
             "api_mode",
             "api_key",
+            "responses_transport",
+            "responses_ws_url",
+            "responses_transport_provider",
+            "_generic_ws_auto_disabled_for",
             "client",
             "_anthropic_client",
             "_anthropic_api_key",
@@ -2492,6 +2518,20 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 "refusing to keep the previous provider's endpoint"
             )
         agent.api_mode = api_mode
+        from agent.codex_responses_ws_transport import normalize_responses_transport
+
+        agent.responses_transport = normalize_responses_transport(
+            responses_transport
+        )
+        agent.responses_ws_url = (
+            str(responses_ws_url).strip() if responses_ws_url else None
+        )
+        agent.responses_transport_provider = (
+            str(responses_transport_provider).strip().lower()
+            if responses_transport_provider
+            else None
+        )
+        agent._generic_ws_auto_disabled_for = None
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -2741,6 +2781,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
+        "responses_transport": getattr(agent, "responses_transport", "sse"),
+        "responses_ws_url": getattr(agent, "responses_ws_url", None),
+        "responses_transport_provider": getattr(
+            agent, "responses_transport_provider", None
+        ),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

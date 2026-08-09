@@ -2111,6 +2111,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.requested_provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
+        agent.responses_transport = "sse"
+        agent.responses_ws_url = None
+        agent.responses_transport_provider = None
+        agent._generic_ws_auto_disabled_for = None
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
