@@ -165,6 +165,32 @@ class TestRunAgentProxyDispatch:
         runner._run_agent_via_proxy.assert_called_once()
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
 
+    @pytest.mark.asyncio
+    async def test_run_agent_forwards_delivery_metadata_to_proxy(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        source = _make_source(platform=Platform.FEISHU)
+        metadata = {"feishu_mention_targets": {"Blair": "ou_blair"}}
+        runner._run_agent_via_proxy = AsyncMock(
+            return_value={
+                "final_response": "ok",
+                "messages": [],
+                "api_calls": 1,
+                "tools": [],
+            }
+        )
+
+        await runner._run_agent(
+            message="hi",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="test-session-123",
+            delivery_metadata=metadata,
+        )
+
+        assert runner._run_agent_via_proxy.await_args.kwargs["delivery_metadata"] == metadata
+
 
 class TestRunAgentViaProxy:
     """Test the actual proxy HTTP forwarding logic."""
@@ -294,4 +320,3 @@ class TestEnvVarRegistration:
         info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_URL"]
         assert info["category"] == "messaging"
         assert info["password"] is False
-
