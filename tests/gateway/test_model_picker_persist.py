@@ -19,7 +19,9 @@ callback and assert ``config.yaml`` is (or isn't) updated — exercising the exa
 closure the PR changed, against a real temp ``HERMES_HOME``.
 """
 
+import threading
 import types
+from unittest.mock import MagicMock
 
 import yaml
 import pytest
@@ -216,11 +218,18 @@ async def test_picker_tap_stores_request_overrides(tmp_path, monkeypatch):
         {"default": "old-model", "provider": "openrouter"},
     )
     runner = _make_runner(adapter)
+    session_key = runner._session_key_for_source(_make_event("/model").source)
+    cached_agent = MagicMock()
+    runner._agent_cache = {session_key: [cached_agent, None]}
+    runner._agent_cache_lock = threading.Lock()
 
     confirmation = await _drive_picker(runner, _make_event("/model --session"))
 
     assert confirmation is not None
-    session_key = runner._session_key_for_source(_make_event("/model").source)
+    cached_agent.switch_model.assert_called_once()
+    assert cached_agent.switch_model.call_args.kwargs["request_overrides"] == {
+        "extra_body": {"text": {"verbosity": "low"}},
+    }
     assert runner._session_model_overrides[session_key]["request_overrides"] == {
         "extra_body": {"text": {"verbosity": "low"}},
     }

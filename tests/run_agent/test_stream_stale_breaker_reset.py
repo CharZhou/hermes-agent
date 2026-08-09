@@ -135,10 +135,24 @@ def test_fallback_activation_resets_stale_streak():
     fbs = [{"provider": "openai", "model": "gpt-4o"}]
     agent = _make_fallback_agent(fallback_model=fbs)
     agent._consecutive_stale_streams = 7
+    client = _mock_client()
 
-    with patch(
-        "agent.auxiliary_client.resolve_provider_client",
-        return_value=(_mock_client(), "resolved"),
+    with (
+        patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(client, "resolved"),
+        ),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={
+                "provider": "openai",
+                "requested_provider": "openai",
+                "model": "resolved",
+                "base_url": str(client.base_url),
+                "api_key": client.api_key,
+                "api_mode": "chat_completions",
+            },
+        ),
     ):
         assert agent._try_activate_fallback() is True
 

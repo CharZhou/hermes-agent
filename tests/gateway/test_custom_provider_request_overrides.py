@@ -6,7 +6,7 @@ import sys
 import threading
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -334,10 +334,16 @@ custom_providers:
 
     runner = _make_runner()
     event = _make_event("/model edge-model --provider custom:edge --session")
+    session_key = runner._session_key_for_source(event.source)
+    cached_agent = MagicMock()
+    runner._agent_cache[session_key] = [cached_agent, None]
     switched = await runner._handle_model_command(event)
     assert switched is not None and "edge-model" in switched
+    cached_agent.switch_model.assert_called_once()
+    assert cached_agent.switch_model.call_args.kwargs["request_overrides"] == (
+        _PROVIDER_OVERRIDES
+    )
 
-    session_key = runner._session_key_for_source(event.source)
     _CapturingAgent.last_init = None
     result = await runner._run_agent(
         message="next turn",

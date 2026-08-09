@@ -8364,6 +8364,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             api_key=_reset_result.api_key,
                             base_url=_reset_result.base_url,
                             api_mode=_reset_result.api_mode,
+                            request_overrides=getattr(
+                                _reset_result, "request_overrides", None
+                            ),
                         )
                     self.model = _reset_result.new_model
                     self.provider = _reset_result.target_provider
@@ -9161,6 +9164,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "responses_transport_provider": getattr(
                 self, "responses_transport_provider", None
             ),
+            "request_overrides": dict(
+                getattr(agent, "request_overrides", {}) or {}
+            ) if agent is not None else {},
             "agent_primary_runtime": copy.deepcopy(
                 getattr(agent, "_primary_runtime", None)
             ) if agent is not None else None,
@@ -9216,6 +9222,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     responses_transport_provider=snapshot.get(
                         "responses_transport_provider"
                     ),
+                    request_overrides=snapshot.get("request_overrides"),
                 )
             except Exception as exc:
                 logger.warning("CLI one-turn model restore failed: %s", exc)
@@ -9354,6 +9361,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     responses_transport_provider=(
                         getattr(result, "responses_transport_provider", None)
                     ),
+                    request_overrides=getattr(result, "request_overrides", None),
                 )
             except Exception as exc:
                 # The agent rolled itself back to the old working model/client.
@@ -9715,6 +9723,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     responses_transport_provider=(
                         getattr(result, "responses_transport_provider", None)
                     ),
+                    request_overrides=getattr(result, "request_overrides", None),
                 )
             except Exception as exc:
                 # Agent rolled itself back; roll the CLI back too and abort so a

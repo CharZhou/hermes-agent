@@ -892,6 +892,7 @@ class AIAgent:
         responses_transport='sse',
         responses_ws_url=None,
         responses_transport_provider=None,
+        request_overrides=None,
     ):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
@@ -905,6 +906,7 @@ class AIAgent:
             responses_transport,
             responses_ws_url,
             responses_transport_provider,
+            request_overrides,
         )
 
     def _safe_print(self, *args, **kwargs):

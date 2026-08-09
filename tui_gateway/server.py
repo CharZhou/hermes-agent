@@ -4426,6 +4426,7 @@ def _snapshot_agent_model_runtime(agent) -> dict:
         "responses_transport_provider": getattr(
             agent, "responses_transport_provider", None
         ),
+        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
     }
 
@@ -4456,6 +4457,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             responses_transport_provider=snapshot.get(
                 "responses_transport_provider"
             ),
+            request_overrides=snapshot.get("request_overrides"),
         )
 
 
@@ -4621,6 +4623,7 @@ def _apply_model_switch(
                 responses_transport_provider=(
                     getattr(result, "responses_transport_provider", None)
                 ),
+                request_overrides=getattr(result, "request_overrides", None),
             )
         except Exception as exc:
             # The in-place swap rolled the agent back to the old working
@@ -4671,6 +4674,9 @@ def _apply_model_switch(
             "responses_ws_url": getattr(result, "responses_ws_url", None),
             "responses_transport_provider": (
                 getattr(result, "responses_transport_provider", None)
+            ),
+            "request_overrides": dict(
+                getattr(result, "request_overrides", {}) or {}
             ),
         }
     if persist_global:
@@ -6553,6 +6559,7 @@ def _make_agent(
         override_responses_transport_provider = model_override.get(
             "responses_transport_provider"
         )
+        override_request_overrides = model_override.get("request_overrides")
         resolve_kwargs = {}
         if str(requested_provider or "").strip().lower() == "custom":
             # Session rows persisted before the custom-provider identity fix
@@ -6603,6 +6610,8 @@ def _make_agent(
                 runtime["responses_transport_provider"] = (
                     override_responses_transport_provider
                 )
+            if isinstance(override_request_overrides, dict):
+                runtime["request_overrides"] = dict(override_request_overrides)
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:
@@ -6648,6 +6657,7 @@ def _make_agent(
             if service_tier_override is not None
             else _load_service_tier()
         ),
+        request_overrides=runtime.get("request_overrides"),
         enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same

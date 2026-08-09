@@ -130,6 +130,10 @@ class TestFeishuFallbackThreadRouting:
         adapter._client = mock_client
         adapter._build_create_message_body = FeishuAdapter._build_create_message_body
         adapter._build_create_message_request = FeishuAdapter._build_create_message_request
+        adapter._reply_to_disabled.return_value = False
+        adapter._send_routing_metadata.return_value = {
+            "thread_id": "omt_topic_abc"
+        }
         # _send_raw_message routes blocking SDK calls through _run_blocking
         # (adapter-owned executor). On a MagicMock(spec=...) that method is
         # auto-mocked and would swallow the real call, so wire a passthrough.
@@ -150,6 +154,11 @@ class TestFeishuFallbackThreadRouting:
 
         # Verify message.create was called (not message.reply)
         mock_client.im.v1.message.create.assert_called_once()
+        mock_client.im.v1.message.reply.assert_not_called()
+        adapter._reply_to_disabled.assert_called_once_with()
+        adapter._send_routing_metadata.assert_called_once_with(
+            {"thread_id": "omt_topic_abc"}
+        )
 
         # The request should have receive_id_type="thread_id"
         call_args = mock_client.im.v1.message.create.call_args[0][0]
@@ -171,4 +180,3 @@ class TestFeishuFallbackThreadRouting:
         assert receive_id_type == "thread_id", (
             f"Expected receive_id_type='thread_id', got '{receive_id_type}'"
         )
-

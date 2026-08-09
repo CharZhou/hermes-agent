@@ -21,6 +21,7 @@ def test_make_agent_passes_resolved_provider():
         "command": None,
         "args": None,
         "credential_pool": None,
+        "request_overrides": {"extra_body": {"runtime_only": True}},
     }
 
     fake_cfg = {
@@ -58,6 +59,9 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
         assert call_kwargs.kwargs["api_key"] == "sk-test-key"
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
+        assert call_kwargs.kwargs["request_overrides"] == {
+            "extra_body": {"runtime_only": True}
+        }
 
 
 def test_probe_config_health_flags_null_sections():
@@ -90,6 +94,7 @@ def test_apply_model_switch_does_not_leak_process_env():
         base_url = "https://api.z.ai/v1"
         api_key = "sk-glm"
         api_mode = "chat_completions"
+        request_overrides = {"extra_body": {"target_only": True}}
 
     class _FakeAgent:
         def __init__(self):
@@ -97,10 +102,12 @@ def test_apply_model_switch_does_not_leak_process_env():
             self.provider = "minimax"
             self.base_url = ""
             self.api_key = ""
+            self.request_overrides = {"extra_body": {"source_only": True}}
 
         def switch_model(self, **kw):
             self.model = kw["new_model"]
             self.provider = kw["new_provider"]
+            self.request_overrides = dict(kw["request_overrides"])
 
     env_keys = (
         "HERMES_MODEL",
@@ -135,8 +142,14 @@ def test_apply_model_switch_does_not_leak_process_env():
     # Target session recorded a per-session override.
     assert sess_b["model_override"]["model"] == "zai/glm-5.1"
     assert sess_b["model_override"]["provider"] == "zai"
+    assert sess_b["model_override"]["request_overrides"] == {
+        "extra_body": {"target_only": True}
+    }
     # The switched agent mutated in place.
     assert sess_b["agent"].model == "zai/glm-5.1"
+    assert sess_b["agent"].request_overrides == {
+        "extra_body": {"target_only": True}
+    }
     # Sibling session is completely untouched.
     assert sess_a["model_override"] is None
     assert sess_a["agent"].model == "minimax/m3"

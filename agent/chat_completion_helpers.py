@@ -2053,51 +2053,29 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 fb_model, fb_provider, _norm_err,
             )
 
-        # Determine api_mode from provider / base URL / model
-        fb_api_mode = "chat_completions"
-        fb_base_url = str(fb_client.base_url)
-        _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
-            fb_api_mode = "codex_responses"
-        elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
-            # Portal is dual-wire: anthropic/* must land on /v1/messages.
-            # resolve_provider_client still returns an OpenAI client for
-            # Nous; the anthropic_messages branch below rebuilds the native
-            # client from that credential + base_url.
-            from hermes_cli.providers import nous_api_mode
+        # Resolve the complete fallback runtime through the same canonical
+        # resolver used at construction and by /model. The client supplies
+        # concrete credentials and endpoint, so this reuses the official
+        # api-mode/transport/provider parser without a second auth lookup.
+        # Keep it before any agent mutation so the route and its request body
+        # overrides move as one runtime unit.
+        from hermes_cli.runtime_provider import resolve_runtime_provider
 
-            fb_api_mode = nous_api_mode(fb_model)
-        elif (
-            fb_provider == "anthropic"
-            or fb_base_url.rstrip("/").lower().endswith("/anthropic")
-            or base_url_hostname(fb_base_url) == "api.anthropic.com"
-        ):
-            # Custom providers (e.g. cron-anthropic) point at the native
-            # api.anthropic.com host with no "/anthropic" path suffix, so the
-            # name/suffix checks above miss them and they default to
-            # chat_completions → POST /v1/chat/completions → 404. Match the
-            # host the same way determine_api_mode() and _detect_api_mode_for_url()
-            # do on the primary path. (#32243, #49247)
-            fb_api_mode = "anthropic_messages"
-        elif _fb_is_azure:
-            # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
-            # support the Responses API. Stay on chat_completions.
-            fb_api_mode = "chat_completions"
-        elif agent._is_direct_openai_url(fb_base_url):
-            fb_api_mode = "codex_responses"
-        elif agent._provider_model_requires_responses_api(
-            fb_model,
-            provider=fb_provider,
-        ):
-            # GPT-5.x models usually need Responses API, but keep
-            # provider-specific exceptions like Copilot gpt-5-mini on
-            # chat completions.
-            fb_api_mode = "codex_responses"
-        elif fb_provider == "bedrock" or (
-            base_url_hostname(fb_base_url).startswith("bedrock-runtime.")
-            and base_url_host_matches(fb_base_url, "amazonaws.com")
-        ):
-            fb_api_mode = "bedrock_converse"
+        fb_base_url = str(fb_client.base_url)
+        fb_runtime = resolve_runtime_provider(
+            requested=fb_provider,
+            explicit_base_url=fb_base_url,
+            explicit_api_key=fb_client.api_key,
+            target_model=fb_model,
+        )
+        resolved_fb_provider = str(fb_runtime.get("provider") or fb_provider)
+        resolved_fb_requested_provider = str(
+            fb_runtime.get("requested_provider") or fb_provider
+        )
+        fb_model = str(fb_runtime.get("model") or fb_model)
+        fb_base_url = str(fb_runtime.get("base_url") or fb_base_url)
+        fb_api_mode = str(fb_runtime.get("api_mode") or "chat_completions")
+        fb_request_overrides = dict(fb_runtime.get("request_overrides") or {})
 
         old_model = agent.model
         old_provider = agent.provider
@@ -2107,13 +2085,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # the stale value from the previous model.  See #22387.
         agent._config_context_length = None
         agent.model = fb_model
-        agent.provider = fb_provider
-        agent.requested_provider = fb_provider
+        agent.provider = resolved_fb_provider
+        agent.requested_provider = resolved_fb_requested_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
-        agent.responses_transport = "sse"
-        agent.responses_ws_url = None
-        agent.responses_transport_provider = None
+        agent.responses_transport = fb_runtime.get("responses_transport") or "sse"
+        agent.responses_ws_url = fb_runtime.get("responses_ws_url")
+        agent.responses_transport_provider = fb_runtime.get(
+            "responses_transport_provider"
+        )
+        agent.request_overrides = fb_request_overrides
         agent._generic_ws_auto_disabled_for = None
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -2160,24 +2141,25 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # Honor per-provider / per-model request_timeout_seconds for the
         # fallback target (same knob the primary client uses).  None = use
         # SDK default.
-        _fb_timeout = get_provider_request_timeout(fb_provider, fb_model)
+        _fb_timeout = get_provider_request_timeout(resolved_fb_provider, fb_model)
+        resolved_fb_api_key = fb_runtime.get("api_key") or fb_client.api_key
 
         if fb_api_mode == "anthropic_messages":
             # Build native Anthropic client instead of using OpenAI client
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
-            effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
+            effective_key = (resolved_fb_api_key or resolve_anthropic_token() or "") if resolved_fb_provider == "anthropic" else (resolved_fb_api_key or "")
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = fb_base_url
             agent._anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url, timeout=_fb_timeout,
             )
-            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
+            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if resolved_fb_provider == "anthropic" else False
             agent.client = None
             agent._client_kwargs = {}
         else:
             # Swap OpenAI client and config in-place
-            agent.api_key = fb_client.api_key
+            agent.api_key = resolved_fb_api_key
             agent.client = fb_client
             # Preserve provider-specific headers that
             # resolve_provider_client() may have baked into
@@ -2191,7 +2173,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             if not fb_headers:
                 fb_headers = getattr(fb_client, "default_headers", None)
             agent._client_kwargs = {
-                "api_key": fb_client.api_key,
+                "api_key": resolved_fb_api_key,
                 "base_url": fb_base_url,
                 **({"default_headers": dict(fb_headers)} if fb_headers else {}),
             }
@@ -2208,7 +2190,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # Re-evaluate prompt caching for the new provider/model
         agent._use_prompt_caching, agent._use_native_cache_layout = (
             agent._anthropic_prompt_cache_policy(
-                provider=fb_provider,
+                provider=resolved_fb_provider,
                 base_url=fb_base_url,
                 api_mode=fb_api_mode,
                 model=fb_model,

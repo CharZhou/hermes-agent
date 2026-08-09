@@ -36,6 +36,17 @@ def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
     return mock
 
 
+def _mock_runtime(provider, model, client):
+    return {
+        "provider": provider,
+        "requested_provider": provider,
+        "model": model,
+        "base_url": str(client.base_url),
+        "api_key": client.api_key,
+        "api_mode": "chat_completions",
+    }
+
+
 # ── Chain initialisation ──────────────────────────────────────────────────
 
 
@@ -79,8 +90,17 @@ class TestFallbackChainAdvancement:
             {"provider": "zai", "model": "glm-4.7"},
         ]
         agent = _make_agent(fallback_model=fbs)
-        with patch("agent.auxiliary_client.resolve_provider_client",
-                    return_value=(_mock_client(), "gpt-4o")):
+        client = _mock_client()
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(client, "gpt-4o"),
+            ),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value=_mock_runtime("openai", "gpt-4o", client),
+            ),
+        ):
             assert agent._try_activate_fallback() is True
             assert agent._fallback_index == 1
             assert agent.model == "gpt-4o"
@@ -95,10 +115,17 @@ class TestFallbackChainAdvancement:
             {"provider": "openai", "model": "gpt-4o"},
         ]
         agent = _make_agent(fallback_model=fbs)
-        with patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc:
+        client = _mock_client()
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc,
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value=_mock_runtime("openai", "gpt-4o", client),
+            ),
+        ):
             mock_rpc.side_effect = [
                 (None, None),                    # broken provider
-                (_mock_client(), "gpt-4o"),       # fallback succeeds
+                (client, "gpt-4o"),              # fallback succeeds
             ]
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
@@ -111,10 +138,17 @@ class TestFallbackChainAdvancement:
             {"provider": "openai", "model": "gpt-4o"},
         ]
         agent = _make_agent(fallback_model=fbs)
-        with patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc:
+        client = _mock_client()
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc,
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value=_mock_runtime("openai", "gpt-4o", client),
+            ),
+        ):
             mock_rpc.side_effect = [
                 RuntimeError("auth failed"),
-                (_mock_client(), "gpt-4o"),
+                (client, "gpt-4o"),
             ]
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"

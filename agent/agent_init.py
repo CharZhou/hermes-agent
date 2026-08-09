@@ -2844,6 +2844,7 @@ def init_agent(
         "responses_transport": agent.responses_transport,
         "responses_ws_url": agent.responses_ws_url,
         "responses_transport_provider": agent.responses_transport_provider,
+        "request_overrides": dict(agent.request_overrides or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

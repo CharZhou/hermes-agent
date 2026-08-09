@@ -1322,6 +1322,7 @@ def try_recover_primary_transport(
         agent.responses_transport_provider = rt.get(
             "responses_transport_provider"
         )
+        agent.request_overrides = dict(rt.get("request_overrides") or {})
         agent._generic_ws_auto_disabled_for = None
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -1558,6 +1559,7 @@ def restore_primary_runtime(agent) -> bool:
         agent.responses_transport_provider = rt.get(
             "responses_transport_provider"
         )
+        agent.request_overrides = dict(rt.get("request_overrides") or {})
         agent._generic_ws_auto_disabled_for = None
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -2390,6 +2392,7 @@ def switch_model(
     responses_transport='sse',
     responses_ws_url=None,
     responses_transport_provider=None,
+    request_overrides=None,
 ):
     """Switch the model/provider in-place for a live agent.
 
@@ -2465,6 +2468,9 @@ def switch_model(
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
     # live dict doesn't poison the rollback target.
     _snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
+    _snapshot["request_overrides"] = dict(
+        getattr(agent, "request_overrides", {}) or {}
+    )
     # Snapshot the credential pool reference so a failed client rebuild can
     # restore the original pool (issue #52727: pool reload is part of this
     # switch and must be reversible on rollback).
@@ -2531,6 +2537,7 @@ def switch_model(
             if responses_transport_provider
             else None
         )
+        agent.request_overrides = dict(request_overrides or {})
         agent._generic_ws_auto_disabled_for = None
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
@@ -2786,6 +2793,7 @@ def switch_model(
         "responses_transport_provider": getattr(
             agent, "responses_transport_provider", None
         ),
+        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

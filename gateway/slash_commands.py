@@ -1875,6 +1875,9 @@ class GatewaySlashCommandsMixin:
                                     responses_transport_provider=(
                                         result.responses_transport_provider
                                     ),
+                                    request_overrides=getattr(
+                                        result, "request_overrides", None
+                                    ),
                                 )
                             except Exception as exc:
                                 # The in-place swap rolled the agent back to the
@@ -2199,6 +2202,9 @@ class GatewaySlashCommandsMixin:
                         responses_ws_url=result.responses_ws_url,
                         responses_transport_provider=(
                             result.responses_transport_provider
+                        ),
+                        request_overrides=getattr(
+                            result, "request_overrides", None
                         ),
                     )
                 except Exception as exc:
