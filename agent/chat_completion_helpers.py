@@ -2072,7 +2072,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         resolved_fb_requested_provider = str(
             fb_runtime.get("requested_provider") or fb_provider
         )
-        fb_model = str(fb_runtime.get("model") or fb_model)
+        # The normalized fallback-chain model is authoritative. A named custom
+        # runtime may expose its configured default model even when target_model
+        # selected a different explicit chain entry.
         fb_base_url = str(fb_runtime.get("base_url") or fb_base_url)
         fb_api_mode = str(fb_runtime.get("api_mode") or "chat_completions")
         fb_request_overrides = dict(fb_runtime.get("request_overrides") or {})

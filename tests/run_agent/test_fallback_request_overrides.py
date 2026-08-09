@@ -4,6 +4,7 @@ import importlib
 from unittest.mock import MagicMock, patch
 
 from agent.transports import get_transport
+from hermes_cli import runtime_provider
 from run_agent import AIAgent
 
 
@@ -102,6 +103,46 @@ def test_named_custom_fallback_installs_its_own_extra_body_on_request():
         assert agent._try_activate_fallback() is True
 
     assert _request_kwargs(agent)["extra_body"]["edge_only"] is True
+
+
+def test_named_custom_fallback_preserves_explicit_chain_model_on_request():
+    agent = _make_agent(
+        fallback_model={"provider": "custom:edge", "model": "chain-model-b"},
+    )
+    config = {
+        "providers": {
+            "edge": {
+                "name": "Edge",
+                "base_url": "https://edge.example/v1",
+                "api_key": "edge-key",
+                "default_model": "provider-default-a",
+                "extra_body": {"edge_only": True},
+            }
+        }
+    }
+
+    with (
+        patch("hermes_cli.runtime_provider.load_config", return_value=config),
+        patch("hermes_cli.config.load_config", return_value=config),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            wraps=runtime_provider.resolve_runtime_provider,
+        ) as resolve_runtime,
+        patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(
+                _client("https://edge.example/v1", "edge-key"),
+                "chain-model-b",
+            ),
+        ),
+    ):
+        assert agent._try_activate_fallback() is True
+
+    assert resolve_runtime.call_args.kwargs["target_model"] == "chain-model-b"
+    assert agent.model == "chain-model-b"
+    request_kwargs = _request_kwargs(agent)
+    assert request_kwargs["model"] == "chain-model-b"
+    assert request_kwargs["extra_body"]["edge_only"] is True
 
 
 def test_restore_primary_runtime_replaces_fallback_request_overrides():
