@@ -1356,7 +1356,9 @@ _CONTEXT_FILE_WINDOW_FRACTION = 0.06
 _CONTEXT_FILE_DYNAMIC_CEILING = 500_000
 
 
-def _dynamic_context_file_max_chars(context_length: Optional[int]) -> int:
+def _dynamic_context_file_max_chars(
+    context_length: Optional[int], *, allow_below_default: bool = False,
+) -> int:
     """Derive a char cap from the model's context window.
 
     Returns at least ``CONTEXT_FILE_MAX_CHARS`` (the historical 20K floor) and
@@ -1368,10 +1370,13 @@ def _dynamic_context_file_max_chars(context_length: Optional[int]) -> int:
     budget = int(
         context_length * _CONTEXT_FILE_CHARS_PER_TOKEN * _CONTEXT_FILE_WINDOW_FRACTION
     )
-    return max(CONTEXT_FILE_MAX_CHARS, min(budget, _CONTEXT_FILE_DYNAMIC_CEILING))
+    floor = 0 if allow_below_default else CONTEXT_FILE_MAX_CHARS
+    return max(floor, min(budget, _CONTEXT_FILE_DYNAMIC_CEILING))
 
 
-def _get_context_file_max_chars(context_length: Optional[int] = None) -> int:
+def _get_context_file_max_chars(
+    context_length: Optional[int] = None, *, allow_below_default: bool = False,
+) -> int:
     """Return the context-file truncation limit.
 
     Resolution order:
@@ -1389,7 +1394,9 @@ def _get_context_file_max_chars(context_length: Optional[int] = None) -> int:
             return int(val)
     except Exception as e:
         logger.debug("Could not read context_file_max_chars from config: %s", e)
-    return _dynamic_context_file_max_chars(context_length)
+    return _dynamic_context_file_max_chars(
+        context_length, allow_below_default=allow_below_default,
+    )
 
 # Collect truncation warnings so the caller (run_agent) can surface them.
 # A ContextVar (not a module-global list) isolates accumulation per thread /
@@ -2029,6 +2036,7 @@ def _truncate_content(
     max_chars: Optional[int] = None,
     context_length: Optional[int] = None,
     read_path: Optional[str] = None,
+    allow_below_default: bool = False,
 ) -> str:
     """Head/tail truncation with a marker in the middle.
 
@@ -2038,7 +2046,9 @@ def _truncate_content(
     cap scale to the model's window when no explicit config override is set.
     """
     if max_chars is None:
-        max_chars = _get_context_file_max_chars(context_length)
+        max_chars = _get_context_file_max_chars(
+            context_length, allow_below_default=allow_below_default,
+        )
     if len(content) <= max_chars:
         return content
     target = read_path or filename
@@ -2063,7 +2073,9 @@ def _truncate_content(
     return head + marker + tail
 
 
-def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
+def load_soul_md(
+    context_length: Optional[int] = None, *, allow_below_default: bool = False,
+) -> Optional[str]:
     """Load SOUL.md from HERMES_HOME and return its content, or None.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
@@ -2087,6 +2099,7 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
         content = _truncate_content(
             content, "SOUL.md", context_length=context_length,
             read_path=str(soul_path),
+            allow_below_default=allow_below_default,
         )
         return content
     except Exception as e:
@@ -2094,7 +2107,9 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
         return None
 
 
-def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_hermes_md(
+    cwd_path: Path, context_length: Optional[int] = None, *, allow_below_default: bool = False,
+) -> str:
     """.hermes.md / HERMES.md — walk to git root."""
     hermes_md_path = _find_hermes_md(cwd_path)
     if not hermes_md_path:
@@ -2114,6 +2129,7 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
         return _truncate_content(
             result, ".hermes.md", context_length=context_length,
             read_path=str(hermes_md_path),
+            allow_below_default=allow_below_default,
         )
     except Exception as e:
         logger.debug("Could not read %s: %s", hermes_md_path, e)
@@ -2147,7 +2163,9 @@ def _agents_md_directory_chain(cwd_path: Path) -> List[Path]:
     return chain
 
 
-def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_agents_md(
+    cwd_path: Path, context_length: Optional[int] = None, *, allow_below_default: bool = False,
+) -> str:
     """AGENTS.md — merged directory chain from git root down to cwd.
 
     Each directory on the chain (see ``_agents_md_directory_chain``)
@@ -2185,6 +2203,7 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
             section = _truncate_content(
                 section, label, context_length=context_length,
                 read_path=str(candidate),
+                allow_below_default=allow_below_default,
             )
             sections.append(section)
             break  # first name match wins per directory
@@ -2199,10 +2218,13 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
         merged, "AGENTS.md (directory chain)",
         context_length=context_length,
         read_path=str(cwd_resolved / "AGENTS.md"),
+        allow_below_default=allow_below_default,
     )
 
 
-def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_claude_md(
+    cwd_path: Path, context_length: Optional[int] = None, *, allow_below_default: bool = False,
+) -> str:
     """CLAUDE.md / claude.md — cwd only."""
     for name in ["CLAUDE.md", "claude.md"]:
         candidate = cwd_path / name
@@ -2215,13 +2237,16 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
                     return _truncate_content(
                         result, "CLAUDE.md", context_length=context_length,
                         read_path=str(candidate),
+                        allow_below_default=allow_below_default,
                     )
             except Exception as e:
                 logger.debug("Could not read %s: %s", candidate, e)
     return ""
 
 
-def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_cursorrules(
+    cwd_path: Path, context_length: Optional[int] = None, *, allow_below_default: bool = False,
+) -> str:
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
     cursorrules_file = cwd_path / ".cursorrules"
@@ -2251,6 +2276,7 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
     return _truncate_content(
         cursorrules_content, ".cursorrules", context_length=context_length,
         read_path=str(cwd_path / ".cursorrules"),
+        allow_below_default=allow_below_default,
     )
 
 
@@ -2259,6 +2285,7 @@ def build_context_files_prompt(
     skip_soul: bool = False,
     context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False,
+    allow_below_default: bool = False,
 ) -> str:
     """Discover and load context files for the system prompt.
 
@@ -2312,17 +2339,19 @@ def build_context_files_prompt(
     else:
         # Priority-based project context: first match wins
         project_context = (
-            _load_hermes_md(cwd_path, context_length)
-            or _load_agents_md(cwd_path, context_length)
-            or _load_claude_md(cwd_path, context_length)
-            or _load_cursorrules(cwd_path, context_length)
+            _load_hermes_md(cwd_path, context_length, allow_below_default=allow_below_default)
+            or _load_agents_md(cwd_path, context_length, allow_below_default=allow_below_default)
+            or _load_claude_md(cwd_path, context_length, allow_below_default=allow_below_default)
+            or _load_cursorrules(cwd_path, context_length, allow_below_default=allow_below_default)
         )
     if project_context:
         sections.append(project_context)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:
-        soul_content = load_soul_md(context_length)
+        soul_content = load_soul_md(
+            context_length, allow_below_default=allow_below_default,
+        )
         if soul_content:
             sections.append(soul_content)
 

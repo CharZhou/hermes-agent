@@ -51,6 +51,16 @@ class TestConfigParsing:
         cfg = ToolSearchConfig.from_raw(True)
         assert cfg.enabled == "auto"
 
+    def test_small_context_mode_enables_search_when_config_disabled(self):
+        from tools.tool_search import ToolSearchConfig, listing_token_budget
+
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "off"}, small_context_mode=True,
+        )
+
+        assert cfg.enabled == "on"
+        assert listing_token_budget(cfg, 32_000) == 640
+
 
     def test_search_limits_clamped(self):
         from tools.tool_search import ToolSearchConfig

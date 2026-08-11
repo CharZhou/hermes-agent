@@ -175,6 +175,14 @@ class TestDynamicContextFileCap:
         assert cap == 48_000
         assert cap > CONTEXT_FILE_MAX_CHARS
 
+    def test_small_context_mode_can_lower_the_context_file_floor(self):
+        assert _dynamic_context_file_max_chars(
+            32_000, allow_below_default=True,
+        ) == 7_680
+
+    def test_default_context_file_floor_is_unchanged_for_32k_window(self):
+        assert _dynamic_context_file_max_chars(32_000) == CONTEXT_FILE_MAX_CHARS
+
 
 
 
@@ -988,5 +996,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
