@@ -14,6 +14,7 @@ class _StubStartupCompressor:
     def __init__(self, *args, **kwargs):
         self.context_length = kwargs.get("config_context_length") or 272_000
         self.config_context_length = kwargs.get("config_context_length")
+        self.minimum_context_length = kwargs.get("minimum_context_length")
         self.threshold_tokens = int(self.context_length * 0.95)
         self.threshold_percent = 0.95
 
@@ -203,6 +204,7 @@ def test_explicit_32k_minimum_allows_a_32k_default_model():
 
     assert agent.minimum_context_length == 32_000
     assert agent.context_compressor.context_length == 32_000
+    assert agent.context_compressor.minimum_context_length == 32_000
 
 
 

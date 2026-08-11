@@ -82,6 +82,16 @@ class TestLowContextWarning:
         warning_calls = [c for c in calls if "too low" in c]
         assert len(warning_calls) == 0
 
+    def test_no_warning_at_configured_32k_boundary(self, cli_obj):
+        cli_obj.agent.context_compressor.context_length = 32_000
+        cli_obj.agent.minimum_context_length = 32_000
+        with patch("cli.get_tool_definitions", return_value=[]), \
+             patch("cli.build_welcome_banner"):
+            cli_obj.show_banner()
+
+        calls = [str(c) for c in cli_obj.console.print.call_args_list]
+        assert not [c for c in calls if "too low" in c]
+
     def test_no_warning_above_boundary(self, cli_obj):
         """No warning above Hermes' minimum context length."""
         cli_obj.agent.context_compressor.context_length = MINIMUM_CONTEXT_LENGTH + 1

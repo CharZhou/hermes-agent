@@ -35,6 +35,7 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
+    SMALL_CONTEXT_MINIMUM_LENGTH,
     get_model_context_length,
     estimate_messages_tokens_rough,
     estimate_tokens_rough,
@@ -1813,7 +1814,10 @@ class ContextCompressor(ContextEngine):
             # if the percentage would suggest a lower value (#14690 handles
             # the degenerate small-window case inside the helper).
             self._threshold_tokens = self._compute_threshold_tokens(
-                _ctx, self.threshold_percent, self.max_tokens,
+                _ctx,
+                self.threshold_percent,
+                self.max_tokens,
+                minimum_context_length=self.minimum_context_length,
             )
             # Apply absolute token cap (compression.threshold_tokens) —
             # takes the lower of the ratio-based threshold and the cap.
@@ -2333,7 +2337,10 @@ class ContextCompressor(ContextEngine):
         if max_tokens is not None:
             self.max_tokens = self._coerce_max_tokens(max_tokens)
         self.threshold_tokens = self._compute_threshold_tokens(
-            context_length, self.threshold_percent, self.max_tokens,
+            context_length,
+            self.threshold_percent,
+            self.max_tokens,
+            minimum_context_length=self.minimum_context_length,
         )
         # Re-apply the absolute token cap so it survives model switches
         # and fallback activations. The cap is a first-class config value
@@ -2395,6 +2402,7 @@ class ContextCompressor(ContextEngine):
     # minimum-context model uses most of its budget before compacting — same
     # rationale as the gpt-5.5/Codex 85% autoraise.
     _MIN_CTX_TRIGGER_RATIO = 0.85
+    _SMALL_CONTEXT_POLICY_TRIGGER_RATIO = 0.70
 
     # Anti-thrash recovery window (#14694): once the ineffective/fallback
     # breaker trips, automatic compaction stays blocked for this long, then
@@ -2471,7 +2479,11 @@ class ContextCompressor(ContextEngine):
 
     @staticmethod
     def _compute_threshold_tokens(
-        context_length: int, threshold_percent: float, max_tokens: int | None = None,
+        context_length: int,
+        threshold_percent: float,
+        max_tokens: int | None = None,
+        *,
+        minimum_context_length: int = MINIMUM_CONTEXT_LENGTH,
     ) -> int:
         """Compute the compaction trigger threshold in tokens.
 
@@ -2501,14 +2513,18 @@ class ContextCompressor(ContextEngine):
         if effective_window <= 0:
             effective_window = context_length
         pct_value = int(effective_window * threshold_percent)
-        floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)
+        floored = max(pct_value, minimum_context_length)
         # If flooring pushed the threshold to/over the effective window it can
         # never be reached. Trigger at 85% of the effective input budget so a
         # minimum-context model rides most of its budget before compacting
         # instead of wasting half.
         if effective_window > 0 and floored >= effective_window:
-            return max(1, min(int(effective_window * ContextCompressor._MIN_CTX_TRIGGER_RATIO),
-                              effective_window - 1))
+            ratio = (
+                ContextCompressor._SMALL_CONTEXT_POLICY_TRIGGER_RATIO
+                if minimum_context_length == SMALL_CONTEXT_MINIMUM_LENGTH
+                else ContextCompressor._MIN_CTX_TRIGGER_RATIO
+            )
+            return max(1, min(int(effective_window * ratio), effective_window - 1))
         return floored
     def __init__(
         self,
@@ -2532,12 +2548,14 @@ class ContextCompressor(ContextEngine):
         proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096,
         min_tail_user_messages: int = 1,
+        minimum_context_length: int = MINIMUM_CONTEXT_LENGTH,
     ):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
+        self.minimum_context_length = minimum_context_length
         # Per-model threshold overrides (longest substring match wins).
         # Stored as a plain dict; resolved in _resolve_threshold(), then the
         # small-context floor is applied on top.

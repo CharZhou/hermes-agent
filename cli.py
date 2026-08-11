@@ -7388,19 +7388,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Warn about low context lengths (common with local servers). Keep
         # this tied to the runtime guard so guidance cannot drift again.
         from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
-        if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
+        minimum_context = getattr(self.agent, "minimum_context_length", MINIMUM_CONTEXT_LENGTH)
+        if isinstance(minimum_context, bool) or not isinstance(minimum_context, int):
+            minimum_context = MINIMUM_CONTEXT_LENGTH
+        if ctx_len and ctx_len < minimum_context:
             self._console_print()
             self._console_print(
                 f"[yellow]⚠️  Context length is only {ctx_len:,} tokens — "
                 f"this is likely too low for agent use with tools.[/]"
             )
             self._console_print(
-                f"[dim]   Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens. Tool schemas + system prompt use a large fixed prefix.[/]"
+                f"[dim]   Hermes needs at least {minimum_context:,} tokens. Tool schemas + system prompt use a large fixed prefix.[/]"
             )
             base_url = getattr(self, "base_url", "") or ""
             if "11434" in base_url or "ollama" in base_url.lower():
                 self._console_print(
-                    f"[dim]   Ollama fix: OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT_LENGTH} ollama serve[/]"
+                    f"[dim]   Ollama fix: OLLAMA_CONTEXT_LENGTH={minimum_context} ollama serve[/]"
                 )
             elif "1234" in base_url:
                 self._console_print(
