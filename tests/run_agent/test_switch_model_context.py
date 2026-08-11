@@ -183,6 +183,28 @@ def test_direct_start_preserves_context_for_normalized_default_model_alias():
     assert agent.context_compressor.context_length == 272_000
 
 
+def test_explicit_32k_minimum_allows_a_32k_default_model():
+    cfg = {
+        "model": {
+            "default": "small-model",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "context_length": 32_000,
+            "minimum_context_length": 32_000,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="small-model",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert agent.minimum_context_length == 32_000
+    assert agent.context_compressor.context_length == 32_000
+
+
 
 
 
