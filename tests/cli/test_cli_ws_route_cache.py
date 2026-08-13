@@ -30,6 +30,9 @@ class _RouteCLI(CLIAgentSetupMixin):
     def _ensure_runtime_credentials(self):
         return True
 
+    def finalize_preloaded_skills(self):
+        return None
+
     def _current_reasoning_callback(self):
         return None
 
