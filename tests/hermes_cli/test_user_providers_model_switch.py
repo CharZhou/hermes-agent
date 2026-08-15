@@ -474,9 +474,11 @@ def test_model_switch_result_carries_named_custom_responses_transport(monkeypatc
             "message": None,
         },
     )
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *_args: None)
     monkeypatch.setattr(
-        "hermes_cli.model_switch.get_model_capabilities", lambda *_args: None
+        "hermes_cli.model_switch.get_model_info", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
         rp,
