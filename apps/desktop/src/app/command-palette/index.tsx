@@ -41,7 +41,6 @@ import {
   MessageCircle,
   Monitor,
   Moon,
-  Network,
   Package,
   Palette,
   PawPrint,
@@ -69,6 +68,7 @@ import {
 import { $bindings, bindingsFor } from '@/store/keybinds'
 import { $dismissedAutoProjectIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
+import { openBrowserTab } from '@/store/preview'
 import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
 import { $connection } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -386,7 +386,6 @@ const toSessionEntry = (session: SessionRow): SessionEntry => ({
 type NonConfigSettingsLabel =
   | 'about'
   | 'archivedChats'
-  | 'connections'
   | 'gateway'
   | 'keysSettings'
   | 'keysTools'
@@ -413,12 +412,23 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
     labelKey: 'providerApiKeys',
     tab: 'providers&pview=keys'
   },
-  { icon: Globe, keywords: ['connection', 'messaging'], labelKey: 'gateway', tab: 'gateway' },
   {
-    icon: Network,
-    keywords: ['connections', 'gateway', 'remote', 'multi', 'instances', 'ssh', 'cloud', 'add gateway', 'registry'],
-    labelKey: 'connections',
-    tab: 'connections'
+    icon: Globe,
+    // The Connections registry merged into the unified Gateways page.
+    keywords: [
+      'connection',
+      'connections',
+      'messaging',
+      'remote',
+      'multi',
+      'instances',
+      'ssh',
+      'cloud',
+      'add gateway',
+      'registry'
+    ],
+    labelKey: 'gateway',
+    tab: 'gateway'
   },
   {
     icon: KeyRound,
@@ -886,6 +896,21 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             keywords: ['update', 'upgrade', 'hermes', 'version', 'system', 'restart'],
             label: cc.updateHermes,
             run: () => requestActiveUpdate()
+          },
+          {
+            icon: RefreshCw,
+            id: 'cc-reload-window',
+            keywords: ['reload', 'window', 'refresh', 'restart', 'ui', 'stuck'],
+            label: cc.reloadWindow,
+            run: () => window.location.reload()
+          },
+          {
+            action: 'view.showBrowser',
+            icon: codiconIcon('globe'),
+            id: 'cc-open-browser',
+            keywords: ['browser', 'web', 'url', 'address', 'open', 'navigate', 'internet', 'site'],
+            label: cc.openBrowser,
+            run: () => openBrowserTab()
           }
         ]
       },
