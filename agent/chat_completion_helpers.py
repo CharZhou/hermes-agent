@@ -2702,6 +2702,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         )
         agent.request_overrides = fb_request_overrides
         agent._generic_ws_auto_disabled_for = None
+        # Per-provider reasoning_content echo opt-in (see _reasoning_echo_opt_in).
+        # Read from the fallback entry so the flag travels with the active
+        # provider; restore_primary_runtime will revert it from the snapshot.
+        agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
