@@ -205,6 +205,14 @@ const $groupChats = atom({})
 const $groupChatWorkspace = atom(null)
 /** Groups whose latest room activity mentions @user — the needs-you badge. */
 const $groupNeedsYou = atom({})
+// Pending prompts (clarify questions AND command approvals) raised inside
+// hidden group-member sessions, keyed `${group}::${memberKey}` (#90694).
+// Members run in invisible plumbing sessions, so a member's blocking prompt
+// used to park server-side with no surface to answer it — the user saw
+// "is thinking…" until the prompt timeout. The turn poll mirrors each
+// member's `pending_clarify` / `pending_approval` resume fields in here;
+// the room renders answer cards from it.
+const $groupClarify = atom({})
 
 // ── group activity feed ─────────────────────────────────────────────────────
 // Runtime-only, bounded per-room record of turn events that feeds the
@@ -308,9 +316,24 @@ function handleSessionsGatewayTransition() {
  *  { [botName]: { shape, color, title } } */
 const $botMeta = atom({})
 
+/** Freshness fence for the server-meta overlay: the last moment each bot's
+ *  local meta was written (stamped again once the server write settles).
+ *  mergeServerMeta refuses to overlay a roster snapshot FETCHED BEFORE this
+ *  moment — such a snapshot still carries the pre-write ui_meta, and
+ *  spreading it over local meta resurrects state the user just changed
+ *  (disbanded groups reappearing as empty roster rows, renames reverting,
+ *  unpins undoing). Runtime-only by design: on a fresh window there are no
+ *  in-flight local writes for a stale snapshot to clobber. */
+const botMetaWriteAt = new Map()
+
+function noteBotMetaWrite(name) {
+  botMetaWriteAt.set(name, Date.now())
+}
+
 async function saveBotMeta(name, patch) {
   const prevMeta = $botMeta.get()[name] || {}
   const next = { ...$botMeta.get(), [name]: { ...prevMeta, ...patch } }
+  noteBotMetaWrite(name)
   $botMeta.set(next)
 
   // Local plugin storage: instant, and the fallback for older gateways.
@@ -374,6 +397,10 @@ async function saveBotMeta(name, patch) {
     } catch {
       /* older/unavailable gateway — the local fallback remains saved */
     }
+    // Re-stamp now that the server write settled: a roster snapshot fetched
+    // while profiles.configure was still in flight predates the new ui_meta
+    // just as surely as one fetched before the local write.
+    noteBotMetaWrite(name)
   }
 
   return { serverPersisted: serverOutcome === 'persisted', serverOutcome }
@@ -695,8 +722,16 @@ function pullServerAvatars(roster) {
  *  pet icon) are PRESERVED — the server copy never includes them, so a
  *  naive replace would wipe a just-saved image avatar on the next roster
  *  paint. When server bot metadata exists, an omitted chat is authoritative
- *  deletion; local still fills all gaps for older gateways with no metadata. */
-function mergeServerMeta(roster) {
+ *  deletion; local still fills all gaps for older gateways with no metadata.
+ *
+ *  `fetchedAt` (the snapshot's issue time) fences the overlay: a bot whose
+ *  local meta was written AFTER the snapshot was fetched is skipped — that
+ *  snapshot's ui_meta predates the write, and spreading it back over local
+ *  meta resurrects state the user just changed (a disbanded group's
+ *  membership reappearing as an empty roster row, a rename reverting, an
+ *  unpin undoing). The next roster fetch post-dates the write and overlays
+ *  normally, so server truth still gets the last word. */
+function mergeServerMeta(roster, fetchedAt = 0) {
   const local = $botMeta.get()
   let changed = false
   const next = { ...local }
@@ -704,6 +739,9 @@ function mergeServerMeta(roster) {
   for (const bot of roster) {
     const server = bot.ui_meta?.['hermes-bots']
     if (server && typeof server === 'object') {
+      if (fetchedAt && fetchedAt < (botMetaWriteAt.get(bot.name) || 0)) {
+        continue
+      }
       const mine = next[bot.name] || {}
       const merged = { ...mine, ...server }
 
@@ -2752,6 +2790,11 @@ function useRoster() {
   return useQuery({
     queryKey: [...ROSTER_KEY, activeConnectionId],
     queryFn: async () => {
+      // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
+      // against each bot's last local meta write, and a fetch issued before
+      // a write can only carry pre-write ui_meta. (Issue time is the
+      // conservative bound — the server answered no earlier than this.)
+      const issuedAt = Date.now()
       // Rich rows (last_session, ui_meta, has_avatar) come from the ACTIVE
       // gateway's profiles.list — unchanged single-source behavior.
       const pins = preferredSessionIds($botMeta.get())
@@ -2772,13 +2815,13 @@ function useRoster() {
       if (typeof host.agents === 'function') {
         try {
           const union = await host.agents()
-          return mergeMultiSourceRoster(local, union, activeConnectionId, $lastRoster.get())
+          return { ...mergeMultiSourceRoster(local, union, activeConnectionId, $lastRoster.get()), fetchedAt: issuedAt }
         } catch {
           /* older build or roster failure — single-source list stands */
         }
       }
 
-      return local
+      return { ...(local && typeof local === 'object' ? local : {}), fetchedAt: issuedAt }
     },
     refetchInterval: 5000,
     staleTime: 5000,
@@ -3384,17 +3427,24 @@ async function openStoredBotChat(name, storedId, summary) {
 /** Adopt-before-mint: the profile may already own a canonical Bot Chat that
  *  the pin lost track of (pin cleared during an outage, ui_meta rolled back,
  *  a fork squatting the title). The core UNIQUE title index guarantees at
- *  most ONE session titled "Bot Chat" per profile db, so a title scan is an
- *  exact registry lookup, not a heuristic. Minting while a "Bot Chat" row
- *  exists is always wrong twice over: it forks the forever-chat AND the new
- *  row can never take the (already held) canonical title, so the next
- *  identity check misreads it and forks again — the infinite-fork loop.
- *  include_hidden is required (canonical chats are always hidden); an older
- *  gateway without it simply finds nothing and we fall through to mint. */
+ *  most ONE session titled "Bot Chat" per profile db — Profile → Named
+ *  Session is an exact registry, so consult it exactly: `title` asks the
+ *  gateway for an indexed WHERE title = ? lookup (window-free; a busy
+ *  profile can push the forever-chat past any recency window, which would
+ *  re-open the fork loop with a higher trigger threshold). Minting while a
+ *  "Bot Chat" row exists is always wrong twice over: it forks the
+ *  forever-chat AND the new row can never take the (already held) canonical
+ *  title, so the next identity check misreads it and forks again — the
+ *  infinite-fork loop. An older gateway ignores the unknown `title` param
+ *  and returns the plain windowed listing instead — the pre-exact-lookup
+ *  behavior — so the local scan below stays as the compatibility rung.
+ *  include_hidden is required (canonical chats are always hidden); a gateway
+ *  without it simply finds nothing and we fall through to mint. */
 async function findExistingCanonicalChat(name) {
   try {
     const res = await host.request('session.list', {
       profile: name,
+      title: 'Bot Chat',
       limit: PROFILE_SESSION_LIST_LIMIT,
       include_hidden: true
     })
@@ -3424,7 +3474,10 @@ function createCanonicalChat(name) {
       saveBotMeta(name, { chat: existing.id })
 
       if (typeof host.openSession === 'function') {
-        await openStoredBotChat(name, existing.id, existing)
+        // The exact-lookup gateway reports the compression-lineage tip as
+        // resolved_id; the pin stays the durable row id (same split the
+        // preferred_session path uses).
+        await openStoredBotChat(name, existing.resolved_id || existing.id, existing)
       }
 
       return existing.id
@@ -4129,6 +4182,7 @@ async function disbandGroupChat(group, members) {
 
   delete needs[group]
   $groupNeedsYou.set(needs)
+  clearGroupClarify(group)
 
   // Persist the room map WITHOUT the disbanded room so it can't come back
   // on the next window load.
@@ -4162,6 +4216,13 @@ async function disbandGroupChat(group, members) {
 
     const meta = $botMeta.get()[member.name] || {}
     await saveBotMeta(member.name, groupMembershipPatch(meta, group, false))
+  }
+
+  // Converge on server truth: the cached roster still carries the pre-disband
+  // ui_meta (the write-fence in mergeServerMeta keeps it from resurrecting
+  // the membership, but a fresh snapshot is what makes every surface agree).
+  if (typeof queryClient !== 'undefined' && queryClient?.invalidateQueries) {
+    queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
   }
 }
 
@@ -4225,6 +4286,10 @@ async function renameGroupChat(oldName, newName, members) {
     $groupNeedsYou.set(needs)
   }
 
+  // Mirrored clarify cards key by group name; drop the old room's — the
+  // next poll re-mirrors any still-blocking question under the new name.
+  clearGroupClarify(oldName)
+
   // Local memberships: swap the name inside each member's canonical groups
   // list (syncs cross-machine via ui_meta). Remote members' seating lives in
   // the room record we just moved.
@@ -4250,6 +4315,12 @@ async function renameGroupChat(oldName, newName, members) {
   if (groupChatMainTabs.has(oldName)) {
     closeGroupChatMainTab(oldName)
     openGroupChat(next)
+  }
+
+  // Same convergence as disband: drop the pre-rename roster snapshot so the
+  // old name can't linger anywhere the fence doesn't cover.
+  if (typeof queryClient !== 'undefined' && queryClient?.invalidateQueries) {
+    queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
   }
 
   return next
@@ -4336,6 +4407,145 @@ const GROUP_TURN_POLL_MS = 2000
 // timed out at 3 minutes, read as a pass, and its finished result never
 // reached the room (db's Aug 2026 report).
 const GROUP_TURN_HARD_CAP_MS = 20 * 60000
+
+/** Mirror a member's pending prompt — clarify question OR command approval —
+ *  from its resume snapshot into the room store, keyed
+ *  `${group}::${memberKey}` (#90694). Returns true while a prompt is
+ *  blocking, so the turn poll can extend its deadline — a waiting prompt
+ *  must not be eaten by the group-turn timeout. Feature-detected: older
+ *  backends without `pending_clarify`/`pending_approval` in the resume
+ *  payload always sync to "no prompt". Clarify wins when both are somehow
+ *  present (approvals resolve inside tool batches; clarify is the outer
+ *  blocker). */
+function syncGroupClarify(group, member, state) {
+  const key = `${group}::${groupMemberKey(member)}`
+  const clarify = state && typeof state.pending_clarify === 'object' ? state.pending_clarify : null
+  const approval = state && typeof state.pending_approval === 'object' ? state.pending_approval : null
+  const pending = clarify || approval
+  const requestId = pending?.request_id || null
+  const all = $groupClarify.get()
+  const current = all[key]
+
+  if (!requestId) {
+    if (current) {
+      const next = { ...all }
+      delete next[key]
+      $groupClarify.set(next)
+    }
+
+    return false
+  }
+
+  // Same request already mirrored — keep the object identity so the card
+  // doesn't lose its draft to a re-render.
+  if (current?.requestId === requestId) {
+    return true
+  }
+
+  const base = {
+    requestId,
+    group,
+    member: member.name,
+    memberKey: groupMemberKey(member),
+    // approval.respond keys on the session, not just the request — carry the
+    // runtime id the snapshot came from.
+    sessionId: state?.session_id || null,
+    at: Date.now()
+  }
+
+  $groupClarify.set({
+    ...all,
+    [key]: clarify
+      ? {
+          ...base,
+          kind: 'clarify',
+          question: typeof clarify.question === 'string' ? clarify.question : '',
+          choices: Array.isArray(clarify.choices) ? clarify.choices.filter(c => typeof c === 'string' && c) : [],
+          multiSelect: Boolean(clarify.multi_select),
+          // Batch clarifies carry `questions`; the room card answers them
+          // one wire call per question, mirroring the 1:1 batch contract.
+          questions: Array.isArray(clarify.questions) ? clarify.questions : null
+        }
+      : {
+          ...base,
+          kind: 'approval',
+          question: typeof approval.description === 'string' ? approval.description : '',
+          command: typeof approval.command === 'string' ? approval.command : '',
+          // The server precomputes the choice set from allow_permanent
+          // (once/session/always/deny); fall back to the minimal pair.
+          choices: Array.isArray(approval.choices) && approval.choices.length
+            ? approval.choices.filter(c => typeof c === 'string' && c)
+            : ['once', 'deny'],
+          multiSelect: false,
+          questions: null
+        }
+  })
+  // A blocked member is a question for the human — badge the room.
+  $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: true })
+
+  return true
+}
+
+/** Drop every mirrored clarify belonging to `group` (disband/rename). */
+function clearGroupClarify(group) {
+  const all = $groupClarify.get()
+  const next = {}
+  let changed = false
+
+  for (const [key, value] of Object.entries(all)) {
+    if (value?.group === group) {
+      changed = true
+    } else {
+      next[key] = value
+    }
+  }
+
+  if (changed) {
+    $groupClarify.set(next)
+  }
+}
+
+/** Answer a member's pending prompt from the room. Routes to the member's
+ *  OWN source (requestForBot), so cross-connection members work.
+ *  - clarify: `clarify.respond`; batch questions send one respond per
+ *    question, sequentially — the LAST lock resolves the blocked tool
+ *    server-side (same contract as the 1:1 batch card). allow_expired
+ *    server-side makes racing the timeout harmless.
+ *  - approval: `approval.respond` with the choice (once/session/always/deny),
+ *    keyed by session + request_id — the same wire the 1:1 approval card
+ *    and native notifications use. */
+async function answerGroupClarify(entry, member, answers) {
+  if (entry.kind === 'approval') {
+    await requestForBot(member, 'approval.respond', {
+      session_id: entry.sessionId || undefined,
+      request_id: entry.requestId,
+      choice: typeof answers === 'string' && answers ? answers : 'deny'
+    })
+  } else if (entry.questions && entry.questions.length) {
+    for (const question of entry.questions) {
+      const qid = question?.qid ?? question?.id
+      await requestForBot(member, 'clarify.respond', {
+        request_id: entry.requestId,
+        question_id: qid,
+        answer: answers?.[qid] ?? ''
+      })
+    }
+  } else {
+    await requestForBot(member, 'clarify.respond', {
+      request_id: entry.requestId,
+      answer: typeof answers === 'string' ? answers : ''
+    })
+  }
+
+  const all = $groupClarify.get()
+  const key = `${entry.group}::${entry.memberKey}`
+
+  if (all[key]?.requestId === entry.requestId) {
+    const next = { ...all }
+    delete next[key]
+    $groupClarify.set(next)
+  }
+}
 
 /** One member turn, gateway-native: submit the room delta as a prompt into
  *  the member's per-group session, then poll the session until a NEW
@@ -4436,7 +4646,11 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
 
     const messages = Array.isArray(state?.messages) ? state.messages : []
     const busy = Boolean(state?.inflight || state?.running)
-    const done = !busy
+    // A clarify blocking inside the member's session is a question for the
+    // HUMAN (#90694) — mirror it into the room store so a card renders, and
+    // hold the turn open: the member isn't stalling, it's waiting on us.
+    const awaitingUser = syncGroupClarify(group, member, state)
+    const done = !busy && !awaitingUser
 
     if (messages.length > before && done) {
       for (let i = messages.length - 1; i >= 0; i--) {
@@ -4465,16 +4679,20 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
       return null
     }
 
-    // Still visibly working: extend the deadline (never past the hard cap).
-    if (busy) {
+    // Still visibly working — or waiting on the user's answer to a clarify:
+    // extend the deadline (never past the hard cap). A pending question must
+    // outlive the base turn timeout or it dies unanswered at 3 minutes.
+    if (busy || awaitingUser) {
       deadline = Math.min(started + GROUP_TURN_HARD_CAP_MS, Math.max(deadline, Date.now() + GROUP_TURN_TIMEOUT_MS))
     }
   }
 
-  // Timeout — reads as a pass, but remember the baseline + thread
+  // Timeout — clear any still-mirrored question card (the server-side
+  // clarify timeout runs its own course) and read as a pass, but remember the baseline + thread
   // (runtime-only) so the finished reply can be posted late into the RIGHT
   // thread instead of vanishing.
   recordGroupActivity(group, { kind: 'timed-out', member: member.name, thread })
+  syncGroupClarify(group, member, null)
   updateGroupChat(group, r => {
     r.stranded = { ...(r.stranded || {}), [groupMemberKey(member)]: { before, thread } }
     return r
@@ -4512,6 +4730,12 @@ async function harvestStrandedGroupReply(group, member) {
 
   if (state?.inflight || state?.running) {
     return // still grinding — keep waiting
+  }
+
+  // A stranded member blocked on a clarify is not "grinding" — surface the
+  // question card (#90694) and keep the marker until it resolves.
+  if (syncGroupClarify(group, member, state)) {
+    return
   }
 
   // Done (or dead): the marker is consumed either way.
@@ -8748,6 +8972,174 @@ function GroupMentionInput({ members, onChange, value, ...inputProps }) {
   })
 }
 
+/** One member's pending prompt, rendered in the room (#90694).
+ *  - clarify: choices as tap buttons (multi-select stages; single-select
+ *    stages one), free text always available, batch sub-questions each get
+ *    their own input.
+ *  - approval: the command in a code row plus the server's choice set
+ *    (once/session/always/deny) as buttons — no free text; approvals are a
+ *    closed choice. Answer sends via the member's own source. */
+function GroupClarifyCard({ entry, members }) {
+  const { group } = entry
+  const isApproval = entry.kind === 'approval'
+  const member = members.find(m => groupMemberKey(m) === entry.memberKey) || members.find(m => m.name === entry.member)
+  const [drafts, setDrafts] = useState({})
+  const [picked, setPicked] = useState({})
+  const [sending, setSending] = useState(false)
+  const questions = entry.questions && entry.questions.length
+    ? entry.questions.map((q, i) => ({
+        qid: q?.qid ?? q?.id ?? `q${i}`,
+        question: typeof q?.question === 'string' ? q.question : '',
+        choices: Array.isArray(q?.choices) ? q.choices.filter(c => typeof c === 'string' && c) : [],
+        multiSelect: Boolean(q?.multi_select ?? q?.multiSelect)
+      }))
+    : [{ qid: '__single__', question: entry.question, choices: entry.choices, multiSelect: entry.multiSelect }]
+
+  const answerFor = q => {
+    const chosen = picked[q.qid] || []
+
+    if (chosen.length) {
+      return q.multiSelect ? JSON.stringify(chosen) : chosen[0]
+    }
+
+    return isApproval ? '' : (drafts[q.qid] || '').trim()
+  }
+
+  const allAnswered = questions.every(q => answerFor(q))
+
+  const submit = async () => {
+    if (!member || sending || !allAnswered) {
+      return
+    }
+
+    setSending(true)
+
+    try {
+      if (isApproval || !(entry.questions && entry.questions.length)) {
+        await answerGroupClarify(entry, member, answerFor(questions[0]))
+      } else {
+        const answers = {}
+
+        for (const q of questions) {
+          answers[q.qid] = answerFor(q)
+        }
+
+        await answerGroupClarify(entry, member, answers)
+      }
+
+      // Echo the exchange into the room log so the thread reads complete.
+      const summary = isApproval
+        ? `${answerFor(questions[0])} — ${entry.command || entry.question || 'command approval'}`
+        : questions
+            .map(q => (questions.length > 1 ? `${q.question}: ${answerFor(q)}` : answerFor(q)))
+            .join('\n')
+      appendGroupChatEntry(group, { kind: 'user', name: 'You' }, summary, entry.thread || 'legacy')
+    } catch (err) {
+      host.notify({ kind: 'error', message: `Could not send the answer to @${botHandle(entry.member, member)}: ${err?.message || err}` })
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return jsxs('div', {
+    className:
+      'grid gap-1.5 rounded-md border border-(--ui-accent,#4f9cf9)/50 bg-(--ui-accent,#4f9cf9)/5 px-2.5 py-2',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center gap-1.5 text-xs font-medium',
+        children: [
+          jsx(Codicon, {
+            name: isApproval ? 'shield' : 'question',
+            className: 'shrink-0 text-(--ui-accent,#4f9cf9)'
+          }),
+          isApproval
+            ? `@${botHandle(entry.member, member)} wants to run a command:`
+            : `@${botHandle(entry.member, member)} asks:`
+        ]
+      }),
+      isApproval && entry.command
+        ? jsx('code', {
+            className:
+              'block overflow-x-auto rounded bg-(--ui-bg-secondary,rgba(0,0,0,0.25)) px-2 py-1 font-mono text-[0.7rem] whitespace-pre-wrap break-all',
+            children: entry.command
+          })
+        : null,
+      ...questions.map(q =>
+        jsxs('div', {
+          className: 'grid gap-1',
+          children: [
+            q.question
+              ? jsx('div', { className: 'text-xs whitespace-pre-wrap', children: q.question })
+              : null,
+            q.choices.length
+              ? jsx('div', {
+                  className: 'flex flex-wrap gap-1',
+                  children: q.choices.map(choice => {
+                    const chosen = (picked[q.qid] || []).includes(choice)
+
+                    return jsx(Button, {
+                      size: 'sm',
+                      variant: chosen ? 'default' : 'secondary',
+                      className: cn(
+                        'h-6 px-2 text-[0.7rem]',
+                        isApproval && choice === 'deny' && !chosen && 'text-destructive'
+                      ),
+                      onClick: () => {
+                        setDrafts(prev => ({ ...prev, [q.qid]: '' }))
+                        setPicked(prev => {
+                          const current = prev[q.qid] || []
+                          const next = q.multiSelect
+                            ? chosen
+                              ? current.filter(c => c !== choice)
+                              : [...current, choice]
+                            : chosen
+                              ? []
+                              : [choice]
+
+                          return { ...prev, [q.qid]: next }
+                        })
+                      },
+                      children: choice
+                    }, `choice:${q.qid}:${choice}`)
+                  })
+                })
+              : null,
+            // Approvals are a closed choice set — no free-text input.
+            isApproval
+              ? null
+              : jsx(Input, {
+                  'aria-label': `Answer @${entry.member}`,
+                  placeholder: q.choices.length ? 'Or type your own answer…' : 'Type your answer…',
+                  value: drafts[q.qid] || '',
+                  onChange: event => {
+                    const value = event.target.value
+                    setPicked(prev => ({ ...prev, [q.qid]: [] }))
+                    setDrafts(prev => ({ ...prev, [q.qid]: value }))
+                  },
+                  onKeyDown: event => {
+                    if (event.key === 'Enter' && questions.length === 1) {
+                      event.preventDefault()
+                      void submit()
+                    }
+                  },
+                  className: 'h-7 text-xs'
+                }, `input:${q.qid}`)
+          ]
+        }, `q:${q.qid}`)
+      ),
+      jsx('div', {
+        className: 'flex justify-end',
+        children: jsx(Button, {
+          size: 'sm',
+          disabled: sending || !allAnswered || !member,
+          onClick: () => void submit(),
+          children: sending ? 'Sending…' : isApproval ? 'Respond' : 'Answer'
+        })
+      })
+    ]
+  })
+}
+
 function GroupChatWorkspace({ group, members, onBack }) {
   const rooms = useValue($groupChats)
   const allMeta = useValue($botMeta)
@@ -8828,6 +9220,11 @@ function GroupChatWorkspace({ group, members, onBack }) {
   const [activityOpen, setActivityOpen] = useState(false)
   // Subscribe: activity rows re-render as turn events land.
   useValue($groupActivity)
+  // Pending member questions for THIS room (#90694), oldest first.
+  const clarifyAll = useValue($groupClarify)
+  const roomClarifies = Object.values(clarifyAll || {})
+    .filter(entry => entry?.group === group)
+    .sort((a, b) => (a.at || 0) - (b.at || 0))
 
   const header = jsxs('div', {
     className: 'flex items-center gap-2 px-2.5 pt-2.5 pb-2',
@@ -9348,12 +9745,17 @@ function GroupChatWorkspace({ group, members, onBack }) {
                     children: 'Say something — every bot in this group hears the room.'
                   }, 'empty')
                 ]),
+            ...roomClarifies.map(entry =>
+              jsx(GroupClarifyCard, { entry, members }, `clarify:${entry.memberKey}:${entry.requestId}`)
+            ),
             room.running
               ? jsx('div', {
                   className: 'px-2 py-1 text-[0.7rem] italic text-(--ui-text-quaternary)',
-                  children: room.turn
-                    ? `${groupSpeakerLabel(room.turn)} is thinking…`
-                    : 'The room is working…'
+                  children: roomClarifies.length
+                    ? 'Waiting for your answer…'
+                    : room.turn
+                      ? `${groupSpeakerLabel(room.turn)} is thinking…`
+                      : 'The room is working…'
                 }, 'working')
               : null
           ]
@@ -9409,7 +9811,7 @@ function GroupChatWorkspace({ group, members, onBack }) {
             String(members.length),
             ' bots and clears the shared room log. The bots themselves and their “Group: ',
             group,
-            '” sessions are kept — you can still open those from each bot’s session browser.'
+            '” sessions are kept.'
           ]
         }),
         destructive: true,
@@ -9746,7 +10148,7 @@ function BotsPane() {
 
   if (live) {
     $lastRoster.set(roster)
-    mergeServerMeta(activeSourceRoster)
+    mergeServerMeta(activeSourceRoster, data?.fetchedAt || 0)
     pullServerAvatars(activeSourceRoster)
     trackInboundActivity(activeSourceRoster)
     backfillMessagingProtocol(activeSourceRoster)
