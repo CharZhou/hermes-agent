@@ -1,10 +1,14 @@
 """Conversation-loop boundaries for post-send Responses WebSocket failures."""
 
-import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+pytest.importorskip("dotenv")
+pytest.importorskip("requests")
+pytest.importorskip("httpx")
+pytest.importorskip("openai")
 
 from agent.agent_runtime_helpers import (
     codex_responses_ws_runtime_identity,
@@ -17,59 +21,18 @@ from agent.codex_responses_ws_transport import (
     GenericWsStartedError,
 )
 from agent.codex_runtime import run_codex_stream
-
-
-def _stub_runtime_import_deps(monkeypatch):
-    monkeypatch.setitem(
-        sys.modules,
-        "dotenv",
-        SimpleNamespace(load_dotenv=lambda *_args, **_kwargs: False),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "requests",
-        SimpleNamespace(
-            Session=type("Session", (), {}),
-            get=lambda *_args, **_kwargs: None,
-            post=lambda *_args, **_kwargs: None,
-            exceptions=SimpleNamespace(RequestException=Exception),
-        ),
-    )
-    _stub_httpx(monkeypatch)
-    _stub_openai(monkeypatch)
-
-
-def _stub_httpx(monkeypatch):
-    module = SimpleNamespace(
-        RemoteProtocolError=type("RemoteProtocolError", (Exception,), {}),
-        ReadTimeout=type("ReadTimeout", (Exception,), {}),
-        ConnectError=type("ConnectError", (Exception,), {}),
-    )
-    monkeypatch.setitem(sys.modules, "httpx", module)
-    return module
-
-
-def _stub_openai(monkeypatch):
-    module = SimpleNamespace(
-        APIConnectionError=type("APIConnectionError", (Exception,), {}),
-    )
-    monkeypatch.setitem(sys.modules, "openai", module)
-    return module
+from run_agent import AIAgent
 
 
 @pytest.fixture
-def ws_agent(monkeypatch):
-    _stub_runtime_import_deps(monkeypatch)
-    had_run_agent = "run_agent" in sys.modules
-    import run_agent
-
+def ws_agent():
     with (
-        patch.object(run_agent, "get_tool_definitions", return_value=[]),
-        patch.object(run_agent, "check_toolset_requirements", return_value={}),
-        patch.object(run_agent, "OpenAI"),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
         patch("agent.ssl_guard.verify_ca_bundle_with_fallback"),
     ):
-        agent = run_agent.AIAgent(
+        agent = AIAgent(
             model="gpt-5",
             api_key="test-key",
             base_url="https://relay.example.com/v1",
@@ -90,9 +53,7 @@ def ws_agent(monkeypatch):
     agent.save_trajectories = False
     agent._fallback_chain = [{"provider": "openrouter", "model": "fallback/model"}]
     agent._fallback_index = 0
-    yield agent
-    if not had_run_agent:
-        sys.modules.pop("run_agent", None)
+    return agent
 
 
 def _prepare_ws_runtime_agent(agent):
@@ -310,12 +271,9 @@ def test_post_send_image_rejection_does_not_strip_images_or_replay(ws_agent):
 
 
 def test_post_send_session_error_does_not_activate_provider_fallback(
-    monkeypatch,
     ws_agent,
 ):
     """Stateful WS post-send failures are terminal for the turn."""
-    _stub_httpx(monkeypatch)
-    _stub_openai(monkeypatch)
     _prepare_ws_runtime_agent(ws_agent)
     ws_agent._try_activate_fallback = MagicMock(return_value=False)
     error = GenericWsStartedError("failed after session send", retryable=True)
