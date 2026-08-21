@@ -146,7 +146,13 @@ def _fake_connect_factory():
 
 def test_appended_input_builds_incremental_request() -> None:
     session = make_session(state_enabled=True)
-    session.commit_terminal_state(api_kwargs(), {"response": {"id": "resp-1"}})
+    session.commit_terminal_state(
+        api_kwargs(),
+        {
+            "type": "response.completed",
+            "response": {"id": "resp-1", "status": "completed"},
+        },
+    )
 
     body, kind = session.build_request(api_kwargs(input=[{"id": "a"}, {"id": "b"}]))
 
@@ -436,7 +442,10 @@ def test_previous_response_not_found_retries_with_full_input() -> None:
     )
     session.commit_terminal_state(
         {"model": "gpt-5", "input": [{"id": "a"}]},
-        {"response": {"id": "stale-resp"}},
+        {
+            "type": "response.completed",
+            "response": {"id": "stale-resp", "status": "completed"},
+        },
     )
 
     observed_snapshot_before_second_connect: list[Any] = []
