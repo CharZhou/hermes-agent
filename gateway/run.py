@@ -26371,7 +26371,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "responses_ws_state",
                     "responses_transport_provider",
                 ):
-                    if not override.get(key) and runtime.get(key) is not None:
+                    if key not in override and runtime.get(key) is not None:
                         override[key] = runtime.get(key)
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")

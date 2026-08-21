@@ -102,6 +102,28 @@ def test_named_provider_responses_ws_state_round_trips_true(monkeypatch):
     assert runtime["responses_ws_state"] is True
 
 
+def test_normalize_custom_provider_entry_preserves_responses_ws_state():
+    from hermes_cli.config import _normalize_custom_provider_entry
+
+    false_entry = _normalize_custom_provider_entry(
+        {
+            "name": "relay",
+            "base_url": "https://relay.example/v1",
+            "responses_ws_state": False,
+        }
+    )
+    true_entry = _normalize_custom_provider_entry(
+        {
+            "name": "relay",
+            "base_url": "https://relay.example/v1",
+            "responses_ws_state": True,
+        }
+    )
+
+    assert false_entry["responses_ws_state"] is False
+    assert true_entry["responses_ws_state"] is True
+
+
 @pytest.mark.parametrize(
     ("base_url", "expected"),
     [
