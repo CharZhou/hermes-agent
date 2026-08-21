@@ -8089,6 +8089,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "api_mode": override.get("api_mode"),
                 "responses_transport": override.get("responses_transport", "sse"),
                 "responses_ws_url": override.get("responses_ws_url"),
+                "responses_ws_state": override.get("responses_ws_state", False),
                 "responses_transport_provider": override.get("responses_transport_provider"),
                 "max_tokens": override.get("max_tokens"),
                 "credential_pool": override.get("credential_pool"),

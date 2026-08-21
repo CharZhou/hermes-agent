@@ -1363,6 +1363,7 @@ custom_providers:
     key_env: RELAY_API_KEY
     api_mode: codex_responses
     responses_transport: auto   # sse | websocket | auto
+    responses_ws_state: true    # reuse one WS session + previous_response_id
     # responses_ws_url: wss://relay.example.com/v1/responses  # optional override
 ```
 
@@ -1370,9 +1371,13 @@ Rules:
 
 - Default remains **SSE** (`responses.create(stream=True)`).
 - Scope is **named custom providers only**. Official ChatGPT Codex (`provider=openai-codex` on `chatgpt.com`) is intentionally out of scope.
+- Hermes sends `OpenAI-Beta: responses_websockets=2026-02-06` on the WebSocket handshake. The upstream must accept that beta contract.
 - `auto` tries WebSocket first, and falls back to SSE **only before `websocket.send(response.create)` is invoked** (for example, a handshake/connect failure). Invocation of `send()` is the irrevocable request boundary even if the call raises; after it, Hermes will not retry WebSocket, replay over SSE, or activate provider fallback for that turn.
 - Explicit `websocket` hard-fails on pre-start errors — use `auto` when you want safe fallback.
 - If `responses_ws_url` is omitted, Hermes derives it from `base_url` (`https`→`wss`, append `/responses` when missing).
+- `responses_ws_state: true` enables stateful reuse of the same Responses WebSocket session. Hermes only sends incremental follow-up requests when the non-input request body is unchanged and the new `input` is a strict append over the previous turn; otherwise it sends a full request on the reused socket.
+- Hermes does **not** prewarm or probe the socket ahead of the first request. The connection is opened on demand by the first turn that actually uses the transport.
+- Stateful reuse is still bounded by the same post-send rule: once `response.create` has been sent, Hermes does not do a blind replay over SSE or another provider just because the upstream rejected the request afterward.
 
 **Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.
 

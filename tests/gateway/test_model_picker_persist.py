@@ -80,6 +80,7 @@ def _fake_switch_result():
         api_mode="chat_completions",
         responses_transport="auto",
         responses_ws_url="wss://relay.example.test/responses",
+        responses_ws_state=True,
         responses_transport_provider="custom:relay",
         request_overrides={
             "extra_body": {"text": {"verbosity": "low"}},
@@ -252,6 +253,7 @@ async def test_picker_tap_stores_responses_transport(tmp_path, monkeypatch):
     override = runner._session_model_overrides[session_key]
     assert override["responses_transport"] == "auto"
     assert override["responses_ws_url"] == "wss://relay.example.test/responses"
+    assert override["responses_ws_state"] is True
     assert override["responses_transport_provider"] == "custom:relay"
 
 

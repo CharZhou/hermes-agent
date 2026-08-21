@@ -764,7 +764,7 @@ PERSISTABLE_MODEL_OVERRIDE_KEYS = (
 )
 
 
-def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Return a copy of *override* containing only persistable, non-secret keys.
 
     Returns ``None`` when the input is empty/not a dict or no persistable
@@ -773,11 +773,15 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
     """
     if not isinstance(override, dict):
         return None
-    cleaned = {
-        k: str(v)
-        for k, v in override.items()
-        if k in PERSISTABLE_MODEL_OVERRIDE_KEYS and v not in (None, "")
-    }
+    cleaned: Dict[str, Any] = {}
+    for key, value in override.items():
+        if key not in PERSISTABLE_MODEL_OVERRIDE_KEYS or value in (None, ""):
+            continue
+        if key == "responses_ws_state":
+            if isinstance(value, bool):
+                cleaned[key] = value
+            continue
+        cleaned[key] = str(value)
     return cleaned or None
 
 

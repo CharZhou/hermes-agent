@@ -1952,6 +1952,7 @@ class GatewaySlashCommandsMixin:
                                     api_mode=result.api_mode,
                                     responses_transport=result.responses_transport,
                                     responses_ws_url=result.responses_ws_url,
+                                    responses_ws_state=result.responses_ws_state,
                                     responses_transport_provider=(
                                         result.responses_transport_provider
                                     ),
@@ -2019,6 +2020,7 @@ class GatewaySlashCommandsMixin:
                             "api_mode": result.api_mode,
                             "responses_transport": result.responses_transport,
                             "responses_ws_url": result.responses_ws_url,
+                            "responses_ws_state": result.responses_ws_state,
                             "responses_transport_provider": (
                                 result.responses_transport_provider
                             ),
@@ -2281,6 +2283,7 @@ class GatewaySlashCommandsMixin:
                         api_mode=result.api_mode,
                         responses_transport=result.responses_transport,
                         responses_ws_url=result.responses_ws_url,
+                        responses_ws_state=result.responses_ws_state,
                         responses_transport_provider=(
                             result.responses_transport_provider
                         ),
@@ -2347,6 +2350,7 @@ class GatewaySlashCommandsMixin:
                 "api_mode": result.api_mode,
                 "responses_transport": result.responses_transport,
                 "responses_ws_url": result.responses_ws_url,
+                "responses_ws_state": result.responses_ws_state,
                 "responses_transport_provider": (
                     result.responses_transport_provider
                 ),

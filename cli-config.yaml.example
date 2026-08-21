@@ -139,6 +139,15 @@ model:
 #     # api_mode auto-detected as codex_responses for api.meta.ai; no need to set
 #     # (the bundled meta-ai provider covers this — a named custom provider is
 #     # only needed for a non-default Meta-compatible endpoint)
+#
+# custom_providers:
+#   - name: sub2api-codex
+#     base_url: https://relay.example.com/v1
+#     key_env: RELAY_API_KEY
+#     api_mode: codex_responses
+#     responses_transport: auto
+#     responses_ws_state: true
+#     # responses_ws_url: wss://relay.example.com/v1/responses
 
 
 # Command-minted credentials (optional): key_cmd

@@ -35,6 +35,7 @@ OVERRIDE = {
     "api_mode": "responses",
     "responses_transport": "auto",
     "responses_ws_url": "wss://api.openai.example/ws/responses",
+    "responses_ws_state": True,
     "responses_transport_provider": "custom:relay",
     "request_overrides": {
         "extra_body": {"text": {"verbosity": "low"}},
@@ -91,6 +92,7 @@ def test_override_persists_and_survives_restart(store_factory, tmp_path):
         "base_url": "https://api.openai.example/v1",
         "responses_transport": "auto",
         "responses_ws_url": "wss://api.openai.example/ws/responses",
+        "responses_ws_state": True,
         "responses_transport_provider": "custom:relay",
     }
 
@@ -122,6 +124,7 @@ def test_runner_rehydrates_override_after_restart(store_factory):
             "provider": "openai",
             "responses_transport": "auto",
             "responses_ws_url": "wss://api.openai.example/ws/responses",
+            "responses_ws_state": True,
             "responses_transport_provider": "custom:relay",
             "request_overrides": {
                 "extra_body": {"text": {"verbosity": "low"}},
@@ -139,6 +142,7 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     assert override["api_mode"] == "responses"
     assert override["responses_transport"] == "auto"
     assert override["responses_ws_url"] == "wss://api.openai.example/ws/responses"
+    assert override["responses_ws_state"] is True
     assert override["responses_transport_provider"] == "custom:relay"
     assert override["request_overrides"] == {
         "extra_body": {"text": {"verbosity": "low"}},
@@ -155,5 +159,6 @@ def test_sanitize_model_override():
         "base_url": "https://api.openai.example/v1",
         "responses_transport": "auto",
         "responses_ws_url": "wss://api.openai.example/ws/responses",
+        "responses_ws_state": True,
         "responses_transport_provider": "custom:relay",
     }
