@@ -10,8 +10,8 @@ from typing import Any
 def _copy_value(value: Any) -> Any:
     try:
         return deepcopy(value)
-    except Exception:
-        return value
+    except Exception as exc:
+        raise TypeError(f"Unsupported non-copyable request value of type {type(value).__name__}") from exc
 
 
 def _copy_request_kwargs(api_kwargs: Mapping[str, Any]) -> dict[str, Any]:
@@ -83,7 +83,7 @@ class ResponsesRequestSnapshot:
         *,
         state_enabled: bool,
     ) -> bool:
-        if not state_enabled or not self.response_id:
+        if not state_enabled or not self.response_id or self.turn_state is None:
             return False
         next_body, next_input = _normalize_request(next_api_kwargs)
         return dict(self.request_body) == next_body and next_input[: len(self.input_items)] == self.input_items and len(next_input) > len(self.input_items)

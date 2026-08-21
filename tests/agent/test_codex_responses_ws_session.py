@@ -72,6 +72,12 @@ def test_disabled_state_forces_full_input() -> None:
     assert "previous_response_id" not in body
 
 
+def test_missing_turn_state_disables_incremental_request() -> None:
+    snapshot = ResponsesRequestSnapshot.from_api_kwargs(api_kwargs(), "resp-1", None)
+
+    assert not snapshot.can_increment(api_kwargs(input=[{"id": "a"}, {"id": "b"}]), state_enabled=True)
+
+
 def test_commit_snapshot_alias_records_state() -> None:
     session = make_session(state_enabled=True)
     session.commit_snapshot(api_kwargs(), "resp-1", {"turn": 1})
@@ -98,3 +104,22 @@ def test_snapshot_does_not_mutate_source_kwargs() -> None:
 
     assert snapshot.incremental_input(api_kwargs(input=[{"id": "a"}, {"id": "b"}])) == [{"id": "b"}]
     assert request["input"] == [{"id": "a"}, {"id": "b"}]
+
+
+def test_snapshot_rejects_non_copyable_mutable_values() -> None:
+    class NonCopyableMutable:
+        def __init__(self) -> None:
+            self.payload = []
+
+        def __deepcopy__(self, memo: dict[int, Any]) -> Any:
+            raise TypeError("no deepcopy")
+
+    request = api_kwargs()
+    request["metadata"] = NonCopyableMutable()
+
+    try:
+        ResponsesRequestSnapshot.from_api_kwargs(request, "resp-1", {"turn": 1})
+    except TypeError as exc:
+        assert "Unsupported non-copyable request value" in str(exc)
+    else:
+        raise AssertionError("expected TypeError")
