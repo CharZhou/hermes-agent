@@ -6,39 +6,37 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-sys.modules.setdefault(
-    "dotenv",
-    SimpleNamespace(load_dotenv=lambda *_args, **_kwargs: False),
+from agent.agent_runtime_helpers import (
+    codex_responses_ws_runtime_identity,
+    restore_primary_runtime,
+    switch_model,
+    try_recover_primary_transport,
 )
-sys.modules.setdefault(
-    "requests",
-    SimpleNamespace(
-        Session=type("Session", (), {}),
-        get=lambda *_args, **_kwargs: None,
-        post=lambda *_args, **_kwargs: None,
-        exceptions=SimpleNamespace(RequestException=Exception),
-    ),
-)
-sys.modules.setdefault(
-    "httpx",
-    SimpleNamespace(
-        RemoteProtocolError=type("RemoteProtocolError", (Exception,), {}),
-        ReadTimeout=type("ReadTimeout", (Exception,), {}),
-        ConnectError=type("ConnectError", (Exception,), {}),
-    ),
-)
-sys.modules.setdefault(
-    "openai",
-    SimpleNamespace(APIConnectionError=type("APIConnectionError", (Exception,), {})),
-)
-
-from agent.agent_runtime_helpers import codex_responses_ws_runtime_identity, switch_model
 from agent.codex_responses_ws_transport import (
     GenericWsRejectedError,
     GenericWsStartedError,
 )
 from agent.codex_runtime import run_codex_stream
-from run_agent import AIAgent
+
+
+def _stub_runtime_import_deps(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "dotenv",
+        SimpleNamespace(load_dotenv=lambda *_args, **_kwargs: False),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "requests",
+        SimpleNamespace(
+            Session=type("Session", (), {}),
+            get=lambda *_args, **_kwargs: None,
+            post=lambda *_args, **_kwargs: None,
+            exceptions=SimpleNamespace(RequestException=Exception),
+        ),
+    )
+    _stub_httpx(monkeypatch)
+    _stub_openai(monkeypatch)
 
 
 def _stub_httpx(monkeypatch):
@@ -60,14 +58,18 @@ def _stub_openai(monkeypatch):
 
 
 @pytest.fixture
-def ws_agent():
+def ws_agent(monkeypatch):
+    _stub_runtime_import_deps(monkeypatch)
+    had_run_agent = "run_agent" in sys.modules
+    import run_agent
+
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch.object(run_agent, "get_tool_definitions", return_value=[]),
+        patch.object(run_agent, "check_toolset_requirements", return_value={}),
+        patch.object(run_agent, "OpenAI"),
         patch("agent.ssl_guard.verify_ca_bundle_with_fallback"),
     ):
-        agent = AIAgent(
+        agent = run_agent.AIAgent(
             model="gpt-5",
             api_key="test-key",
             base_url="https://relay.example.com/v1",
@@ -75,6 +77,7 @@ def ws_agent():
             requested_provider="custom:relay",
             api_mode="codex_responses",
             responses_transport="auto",
+            responses_ws_state=True,
             responses_transport_provider="custom:relay",
             quiet_mode=True,
             skip_context_files=True,
@@ -87,7 +90,9 @@ def ws_agent():
     agent.save_trajectories = False
     agent._fallback_chain = [{"provider": "openrouter", "model": "fallback/model"}]
     agent._fallback_index = 0
-    return agent
+    yield agent
+    if not had_run_agent:
+        sys.modules.pop("run_agent", None)
 
 
 def _prepare_ws_runtime_agent(agent):
@@ -107,6 +112,143 @@ def _prepare_ws_runtime_agent(agent):
     agent._fire_streamed_codex_commentary = MagicMock()
     agent._touch_activity = MagicMock()
     agent._client_log_context = MagicMock(return_value="ctx")
+
+
+def _prepare_runtime_restore_agent(agent):
+    agent._create_openai_client = MagicMock(return_value=SimpleNamespace())
+    agent._is_openrouter_url = MagicMock(return_value=False)
+    agent.context_compressor = SimpleNamespace(
+        model=agent.model,
+        base_url=agent.base_url,
+        api_key=agent.api_key,
+        provider=agent.provider,
+        context_length=128000,
+        api_mode=agent.api_mode,
+        threshold_tokens=96000,
+        update_model=MagicMock(),
+    )
+    agent._credential_pool = None
+    agent._credential_pool_entry_id = None
+    agent._cache_disabled = False
+
+
+def test_primary_runtime_snapshot_restores_responses_ws_state(ws_agent):
+    """Primary runtime snapshots must preserve stateful WS capability."""
+    _prepare_runtime_restore_agent(ws_agent)
+    assert ws_agent._primary_runtime["responses_ws_state"] is True
+
+    ws_agent.responses_ws_state = False
+    ws_agent._fallback_activated = True
+    ws_agent._rate_limited_until = 0
+
+    assert restore_primary_runtime(ws_agent) is True
+    assert ws_agent.responses_ws_state is True
+
+
+def test_primary_transport_recovery_restores_responses_ws_state(monkeypatch, ws_agent):
+    """Primary connection recovery must rebuild from the stateful WS snapshot."""
+    _prepare_runtime_restore_agent(ws_agent)
+    ws_agent.responses_ws_state = False
+    monkeypatch.setattr("agent.agent_runtime_helpers.time.sleep", lambda _seconds: None)
+
+    class ConnectError(Exception):
+        pass
+
+    assert try_recover_primary_transport(
+        ws_agent,
+        ConnectError("reset"),
+        retry_count=0,
+        max_retries=1,
+    ) is True
+    assert ws_agent.responses_ws_state is True
+
+
+def test_provider_fallback_closes_responses_ws_session_before_runtime_mutation(
+    monkeypatch,
+    ws_agent,
+):
+    """Provider fallback must retire session state before changing identity."""
+    from agent.chat_completion_helpers import try_activate_fallback
+
+    _prepare_runtime_restore_agent(ws_agent)
+    ws_agent._fallback_chain = [{"provider": "custom:fallback", "model": "gpt-5"}]
+    ws_agent._fallback_index = 0
+    ws_agent._fallback_activated = False
+    ws_agent._unavailable_fallback_keys = set()
+    ws_agent._replace_primary_openai_client = MagicMock()
+    ws_agent._anthropic_prompt_cache_policy = MagicMock(return_value=(False, False))
+    ws_agent._ensure_lmstudio_runtime_loaded = MagicMock()
+    ws_agent._buffer_status = MagicMock()
+    ws_agent.reasoning_config = None
+    ws_agent._pending_fallback_notice = None
+    ws_agent._generic_ws_auto_disabled_for = "old"
+    ws_agent._transport_cache = {"old": object()}
+
+    close_identity = []
+
+    def close_old_session():
+        close_identity.append(
+            (ws_agent.requested_provider, ws_agent.base_url)
+        )
+
+    old_session = SimpleNamespace(close=MagicMock(side_effect=close_old_session))
+    ws_agent._codex_responses_ws_session = old_session
+    ws_agent._codex_responses_ws_session_identity = codex_responses_ws_runtime_identity(ws_agent)
+    fallback_client = SimpleNamespace(
+        base_url="https://fallback.example.com/v1",
+        api_key="fallback-key",
+        _custom_headers={},
+    )
+    fallback_runtime = {
+        "provider": "custom",
+        "requested_provider": "custom:fallback",
+        "base_url": "https://fallback.example.com/v1",
+        "api_mode": "codex_responses",
+        "responses_transport": "auto",
+        "responses_ws_url": None,
+        "responses_ws_state": True,
+        "responses_transport_provider": "custom:fallback",
+        "request_overrides": {},
+        "api_key": "fallback-key",
+    }
+
+    monkeypatch.setattr(
+        "agent.auxiliary_client.resolve_provider_client",
+        lambda *_args, **_kwargs: (fallback_client, "gpt-5"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.fallback_config.resolve_entry_api_key",
+        lambda _entry: "fallback-key",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: fallback_runtime,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_normalize.normalize_model_for_provider",
+        lambda model, _provider: model,
+    )
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda _provider: None)
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 128000,
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr(
+        "hermes_constants.resolve_reasoning_config",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "agent.chat_completion_helpers.rewrite_prompt_model_identity",
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert try_activate_fallback(ws_agent) is True
+    old_session.close.assert_called_once()
+    assert close_identity == [("custom:relay", "https://relay.example.com/v1")]
+    assert ws_agent._codex_responses_ws_session is None
+    assert ws_agent.provider == "custom"
+    assert ws_agent.requested_provider == "custom:fallback"
 
 
 @pytest.mark.parametrize(

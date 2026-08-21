@@ -2683,6 +2683,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             ):
                 fb_api_mode = "bedrock_converse"
 
+        from agent.agent_runtime_helpers import close_codex_responses_ws_session
+
+        close_codex_responses_ws_session(agent, "provider_fallback")
+
         old_model = agent.model
         old_provider = agent.provider
 

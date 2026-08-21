@@ -3052,6 +3052,7 @@ def init_agent(
         "api_key": getattr(agent, "api_key", ""),
         "responses_transport": agent.responses_transport,
         "responses_ws_url": agent.responses_ws_url,
+        "responses_ws_state": bool(agent.responses_ws_state),
         "responses_transport_provider": agent.responses_transport_provider,
         "request_overrides": dict(agent.request_overrides or {}),
         "client_kwargs": dict(agent._client_kwargs),

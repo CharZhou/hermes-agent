@@ -439,7 +439,7 @@ class ResponsesWebsocketSession:
                             terminal_event = event
                         yield _event_namespace(event)
                         if terminal:
-                            if locally_interrupted and event.get("type") == "response.cancelled":
+                            if locally_interrupted:
                                 raise InterruptedError(
                                     "Agent interrupted during Responses WebSocket stream"
                                 )

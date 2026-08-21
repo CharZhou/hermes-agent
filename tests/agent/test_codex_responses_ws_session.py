@@ -774,3 +774,58 @@ def test_interrupt_sends_response_cancel() -> None:
         )
 
     assert any(item.get("type") == "response.cancel" for item in socket.sent)
+
+
+def test_interrupt_then_completed_terminal_still_raises_interrupted() -> None:
+    socket = _ScriptedSocket(
+        [
+            _QueuedRequest(
+                frames=[
+                    json.dumps({"type": "response.created", "response": {"id": "resp-1"}}),
+                    json.dumps(
+                        {
+                            "type": "response.done",
+                            "response": {"id": "resp-1", "status": "completed"},
+                        }
+                    ),
+                ],
+                cancel_frames=[],
+            )
+        ]
+    )
+
+    def connect(*_args: Any, **_kwargs: Any) -> _ScriptedSocket:
+        return socket
+
+    session = ResponsesWebsocketSession(
+        state_enabled=True,
+        connect=connect,
+        client=object(),
+        api_key="test-key",
+        headers={},
+        provider="custom:relay",
+        base_url="https://relay.example.com/v1",
+        transport="websocket",
+        timeout=0.05,
+        idle_timeout=0.2,
+        recv_poll_timeout=0.01,
+        ping_interval=30.0,
+        ping_timeout=60.0,
+        close_timeout=5.0,
+    )
+
+    checks = {"n": 0}
+
+    def interrupted() -> bool:
+        checks["n"] += 1
+        return checks["n"] > 1
+
+    with pytest.raises(InterruptedError):
+        session.stream_request(
+            api_kwargs={"model": "gpt-5", "input": [{"id": "a"}]},
+            collect_events=lambda events: list(events),
+            interrupted=interrupted,
+            register_abort=None,
+        )
+
+    assert any(item.get("type") == "response.cancel" for item in socket.sent)
