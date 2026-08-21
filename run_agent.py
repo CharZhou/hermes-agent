@@ -515,6 +515,7 @@ class AIAgent:
         requested_provider: str = None,
         responses_transport: str = "sse",
         responses_ws_url: str = None,
+        responses_ws_state: bool = False,
         responses_transport_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
@@ -608,6 +609,7 @@ class AIAgent:
             pass_session_id=pass_session_id,
             responses_transport=responses_transport,
             responses_ws_url=responses_ws_url,
+            responses_ws_state=responses_ws_state,
             responses_transport_provider=responses_transport_provider,
         )
 
@@ -4653,7 +4655,17 @@ class AIAgent:
         except Exception:
             pass
 
-        # 6c. Close the Codex app-server session. The runtime already drops
+        # 6c. Close the Codex Responses WebSocket session owned by this
+        # AIAgent. The session may keep a reusable socket/pump alive across
+        # successful turns, so hard teardown must explicitly retire it.
+        try:
+            from agent.agent_runtime_helpers import close_codex_responses_ws_session
+
+            close_codex_responses_ws_session(self, "agent_close")
+        except Exception:
+            pass
+
+        # 6d. Close the Codex app-server session. The runtime already drops
         # it on turn crash / retirement (agent/codex_runtime.py), but hard
         # teardown had no owner — a /new, /reset, or session expiry left the
         # app-server child process running until interpreter exit. Clear the

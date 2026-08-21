@@ -816,8 +816,9 @@ def test_error_classifier_handles_generic_ws_errors():
     assert rejected.should_fallback is False
 
 
-def test_run_codex_stream_does_not_activate_state_without_owned_session(monkeypatch):
+def test_run_codex_stream_lazily_owns_stateful_session(monkeypatch):
     import agent.codex_responses_ws_transport as transport
+    import agent.codex_responses_ws_session as session_mod
     from agent.codex_runtime import run_codex_stream
 
     _stub_httpx(monkeypatch)
@@ -856,15 +857,36 @@ def test_run_codex_stream_does_not_activate_state_without_owned_session(monkeypa
     agent._client_log_context = lambda: "ctx"
 
     result = SimpleNamespace(output=[], usage=None, status="completed")
+    created_sessions = []
 
     def fake_ws(**kwargs):
-        assert "responses_ws_state" not in kwargs
-        assert "responses_ws_session" not in kwargs
-        return result
+        raise AssertionError("stateful runtime must not use one-shot WS transport")
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.stream_calls = []
+            created_sessions.append(self)
+
+        def is_closed(self):
+            return False
+
+        def stream_request(self, **kwargs):
+            self.stream_calls.append(kwargs)
+            return result
 
     monkeypatch.setattr(transport, "run_generic_codex_ws_stream", fake_ws)
+    monkeypatch.setattr(session_mod, "ResponsesWebsocketSession", FakeSession)
 
     assert run_codex_stream(agent, {"model": "gpt-5", "input": "hello"}, client=client) is result
+    assert run_codex_stream(agent, {"model": "gpt-5", "input": "again"}, client=client) is result
+    assert created_sessions == [agent._codex_responses_ws_session]
+    assert created_sessions[0].kwargs["state_enabled"] is True
+    assert created_sessions[0].kwargs["client"] is client
+    assert [call["api_kwargs"]["input"] for call in created_sessions[0].stream_calls] == [
+        "hello",
+        "again",
+    ]
 
 
 def test_run_codex_stream_auto_never_replays_after_started_error(monkeypatch):

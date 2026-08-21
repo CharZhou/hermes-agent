@@ -708,6 +708,8 @@ def init_agent(
         else None
     )
     agent._generic_ws_auto_disabled_for = None
+    agent._codex_responses_ws_session = None
+    agent._codex_responses_ws_session_identity = None
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])

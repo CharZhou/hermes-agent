@@ -1407,14 +1407,24 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         agent._touch_activity("receiving stream response")
 
     from agent.codex_responses_ws_transport import (
+        DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        DEFAULT_IDLE_TIMEOUT_SECONDS,
+        DEFAULT_RECV_POLL_SECONDS,
         GenericWsNotStartedError,
         GenericWsRejectedError,
         GenericWsStartedError,
+        _connect_websocket,
         build_generic_ws_identity,
         is_generic_codex_ws_eligible,
         normalize_responses_transport,
         run_generic_codex_ws_stream,
     )
+    from agent.agent_runtime_helpers import (
+        close_codex_responses_ws_session,
+        codex_responses_ws_runtime_identity,
+        reset_codex_responses_ws_session,
+    )
+    from agent.codex_responses_ws_session import ResponsesWebsocketSession
 
     transport = normalize_responses_transport(
         getattr(agent, "responses_transport", "sse")
@@ -1472,18 +1482,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         try:
             timeout = getattr(agent, "_client_kwargs", {}).get("timeout", 15.0)
             if not isinstance(timeout, (int, float)):
-                timeout = 15.0
-            return run_generic_codex_ws_stream(
-                api_kwargs=api_kwargs,
-                client=active_client,
-                api_key=getattr(agent, "api_key", None),
-                headers=getattr(agent, "_client_kwargs", {}).get("default_headers"),
-                provider=transport_provider,
-                base_url=agent.base_url,
-                responses_ws_url=responses_ws_url,
-                session_id=getattr(agent, "session_id", None),
-                transport=transport,
-                collect_events=lambda events, _unused_client: _consume_codex_event_stream(
+                timeout = DEFAULT_CONNECT_TIMEOUT_SECONDS
+
+            def _collect_ws_events(events: Any) -> Any:
+                return _consume_codex_event_stream(
                     events,
                     model=api_kwargs.get("model"),
                     on_text_delta=_on_text_delta,
@@ -1499,10 +1501,59 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     on_first_delta=on_first_delta,
                     on_event=_on_event,
                     interrupt_check=_interrupt_or_superseded_ws,
-                ),
+                )
+
+            if responses_ws_state:
+                session_identity = codex_responses_ws_runtime_identity(agent)
+                session = getattr(agent, "_codex_responses_ws_session", None)
+                if (
+                    session is not None
+                    and getattr(agent, "_codex_responses_ws_session_identity", None)
+                    != session_identity
+                ):
+                    close_codex_responses_ws_session(agent, "responses_ws_runtime_identity_changed")
+                    session = None
+                if session is None or getattr(session, "is_closed", lambda: False)():
+                    session = ResponsesWebsocketSession(
+                        state_enabled=True,
+                        connect=_connect_websocket,
+                        client=active_client,
+                        api_key=getattr(agent, "api_key", None),
+                        headers=getattr(agent, "_client_kwargs", {}).get("default_headers"),
+                        provider=transport_provider,
+                        base_url=agent.base_url,
+                        transport=transport,
+                        timeout=float(timeout),
+                        idle_timeout=max(float(timeout), DEFAULT_IDLE_TIMEOUT_SECONDS),
+                        recv_poll_timeout=DEFAULT_RECV_POLL_SECONDS,
+                        ping_interval=20.0,
+                        ping_timeout=20.0,
+                        close_timeout=10.0,
+                        responses_ws_url=responses_ws_url,
+                    )
+                    agent._codex_responses_ws_session = session
+                    agent._codex_responses_ws_session_identity = session_identity
+                return session.stream_request(
+                    api_kwargs=api_kwargs,
+                    collect_events=_collect_ws_events,
+                    interrupted=_interrupt_or_superseded_ws,
+                    register_abort=_register_connection_abort,
+                )
+
+            return run_generic_codex_ws_stream(
+                api_kwargs=api_kwargs,
+                client=active_client,
+                api_key=getattr(agent, "api_key", None),
+                headers=getattr(agent, "_client_kwargs", {}).get("default_headers"),
+                provider=transport_provider,
+                base_url=agent.base_url,
+                responses_ws_url=responses_ws_url,
+                session_id=getattr(agent, "session_id", None),
+                transport=transport,
+                collect_events=lambda events, _unused_client: _collect_ws_events(events),
                 interrupted=_interrupt_or_superseded_ws,
                 timeout=timeout,
-                idle_timeout=max(float(timeout), 180.0),
+                idle_timeout=max(float(timeout), DEFAULT_IDLE_TIMEOUT_SECONDS),
                 register_connection_abort=_register_connection_abort,
             )
         except GenericWsNotStartedError as exc:
@@ -1514,12 +1565,16 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     exc,
                 )
                 raise
+            close_codex_responses_ws_session(agent, "responses_ws_auto_sse_fallback")
             agent._generic_ws_auto_disabled_for = ws_identity
             logger.debug(
                 "Generic Codex Responses WebSocket unavailable before request start; "
                 "using SSE for this runtime (model=%s).",
                 api_kwargs.get("model", "unknown"),
             )
+        except InterruptedError:
+            reset_codex_responses_ws_session(agent, "interrupt")
+            raise
         except GenericWsRejectedError as exc:
             # Server rejection is after send and therefore never replayable.
             logger.warning(
