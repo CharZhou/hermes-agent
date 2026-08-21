@@ -1,9 +1,28 @@
 """Unit coverage for the opt-in generic Codex Responses WebSocket transport."""
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
+
+
+def _stub_httpx(monkeypatch):
+    module = SimpleNamespace(
+        RemoteProtocolError=type("RemoteProtocolError", (Exception,), {}),
+        ReadTimeout=type("ReadTimeout", (Exception,), {}),
+        ConnectError=type("ConnectError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "httpx", module)
+    return module
+
+
+def _stub_openai(monkeypatch):
+    module = SimpleNamespace(
+        APIConnectionError=type("APIConnectionError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "openai", module)
+    return module
 
 
 def test_normalize_responses_transport_accepts_only_known_values():
@@ -304,6 +323,56 @@ def test_generic_ws_stream_sends_response_create_and_reuses_event_consumer(monke
     assert result.output_text == "hello"
 
 
+def test_generic_ws_stateful_mode_reuses_cached_session(monkeypatch):
+    import agent.codex_responses_ws_transport as transport
+
+    transport._GENERIC_WS_SESSIONS.clear()
+    socket = _FakeSocket(
+        [
+            json.dumps({"type": "response.created", "response": {"id": "resp-1"}}),
+            json.dumps({"type": "response.done", "response": {"id": "resp-1", "status": "completed"}}),
+            json.dumps({"type": "response.created", "response": {"id": "resp-2"}}),
+            json.dumps({"type": "response.done", "response": {"id": "resp-2", "status": "completed"}}),
+        ]
+    )
+    connect_calls = {"n": 0}
+
+    def connect(*_args, **_kwargs):
+        connect_calls["n"] += 1
+        return socket
+
+    monkeypatch.setattr(transport, "_connect_websocket", connect)
+
+    first = transport.run_generic_codex_ws_stream(
+        api_kwargs={"model": "gpt-5", "input": [{"id": "a"}]},
+        api_key="test-key",
+        provider="custom:sub2api",
+        base_url="https://relay.example.com/v1",
+        session_id="session-stateful",
+        transport="websocket",
+        collect_events=lambda events, _client: [event.type for event in events],
+        interrupted=lambda: False,
+        responses_ws_state=True,
+    )
+    second = transport.run_generic_codex_ws_stream(
+        api_kwargs={"model": "gpt-5", "input": [{"id": "a"}, {"id": "b"}]},
+        api_key="test-key",
+        provider="custom:sub2api",
+        base_url="https://relay.example.com/v1",
+        session_id="session-stateful",
+        transport="websocket",
+        collect_events=lambda events, _client: [event.type for event in events],
+        interrupted=lambda: False,
+        responses_ws_state=True,
+    )
+
+    assert first == ["response.created", "response.completed"]
+    assert second == ["response.created", "response.completed"]
+    assert connect_calls["n"] == 1
+    assert json.loads(socket.sent[1])["previous_response_id"] == "resp-1"
+    transport._GENERIC_WS_SESSIONS.clear()
+
+
 def test_ws_failure_after_send_is_irrevocable_even_when_send_raises(monkeypatch):
     import agent.codex_responses_ws_transport as transport
 
@@ -481,6 +550,8 @@ def test_run_codex_stream_ws_cancelled_uses_shared_consumer(monkeypatch):
     import agent.codex_responses_ws_transport as transport
     from agent.codex_runtime import run_codex_stream
 
+    _stub_httpx(monkeypatch)
+    _stub_openai(monkeypatch)
     socket = _FakeSocket(
         [
             json.dumps(
@@ -561,6 +632,9 @@ def test_explicit_websocket_mode_does_not_fallback_to_sse(monkeypatch):
     import agent.codex_responses_ws_transport as transport
     from agent.codex_runtime import run_codex_stream
 
+    _stub_httpx(monkeypatch)
+    _stub_openai(monkeypatch)
+
     def fail_before_send(**_kwargs):
         raise transport.GenericWsNotStartedError("upgrade unavailable")
 
@@ -602,6 +676,8 @@ def test_auto_transport_sticks_to_sse_after_pre_send_ws_failure(monkeypatch):
     import agent.codex_responses_ws_transport as transport
     from agent.codex_runtime import run_codex_stream
 
+    _stub_httpx(monkeypatch)
+    _stub_openai(monkeypatch)
     ws_calls = []
 
     def fail_before_send(**_kwargs):
@@ -709,6 +785,8 @@ def test_run_codex_stream_auto_never_replays_after_started_error(monkeypatch):
     import agent.codex_responses_ws_transport as transport
     from agent.codex_runtime import run_codex_stream
 
+    _stub_httpx(monkeypatch)
+    _stub_openai(monkeypatch)
     agent = SimpleNamespace(
         provider="custom:sub2api",
         base_url="https://relay.example.com/v1",

@@ -1504,6 +1504,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 timeout=timeout,
                 idle_timeout=max(float(timeout), 180.0),
                 register_connection_abort=_register_connection_abort,
+                responses_ws_state=responses_ws_state,
             )
         except GenericWsNotStartedError as exc:
             if transport != "auto":
