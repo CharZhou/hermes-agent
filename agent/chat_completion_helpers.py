@@ -2697,6 +2697,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.api_mode = fb_api_mode
         agent.responses_transport = fb_runtime.get("responses_transport") or "sse"
         agent.responses_ws_url = fb_runtime.get("responses_ws_url")
+        agent.responses_ws_state = bool(fb_runtime.get("responses_ws_state", False))
         agent.responses_transport_provider = fb_runtime.get(
             "responses_transport_provider"
         )

@@ -261,6 +261,7 @@ _RUNTIME_AGENT_OVERRIDE_KEYS = (
     "api_mode",
     "responses_transport",
     "responses_ws_url",
+    "responses_ws_state",
     "responses_transport_provider",
     "command",
     "args",
@@ -376,6 +377,7 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
         "api_mode": runtime.get("api_mode"),
         "responses_transport": runtime.get("responses_transport", "sse"),
         "responses_ws_url": runtime.get("responses_ws_url"),
+        "responses_ws_state": runtime.get("responses_ws_state", False),
         "responses_transport_provider": runtime.get(
             "responses_transport_provider"
         ),

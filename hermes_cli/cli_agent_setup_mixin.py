@@ -94,6 +94,7 @@ class CLIAgentSetupMixin:
         resolved_credential_pool = runtime.get("credential_pool")
         resolved_responses_transport = runtime.get("responses_transport", "sse")
         resolved_responses_ws_url = runtime.get("responses_ws_url")
+        resolved_responses_ws_state = bool(runtime.get("responses_ws_state", False))
         resolved_responses_transport_provider = runtime.get("responses_transport_provider")
         # A callable api_key is a bearer-token provider (Azure Foundry
         # Entra ID — ``azure_identity_adapter.build_token_provider``).
@@ -141,6 +142,7 @@ class CLIAgentSetupMixin:
             or resolved_acp_args != self.acp_args
             or resolved_responses_transport != getattr(self, "responses_transport", "sse")
             or resolved_responses_ws_url != getattr(self, "responses_ws_url", None)
+            or resolved_responses_ws_state != getattr(self, "responses_ws_state", False)
             or resolved_responses_transport_provider
             != getattr(self, "responses_transport_provider", None)
         )
@@ -150,6 +152,7 @@ class CLIAgentSetupMixin:
         self.acp_args = resolved_acp_args
         self.responses_transport = resolved_responses_transport
         self.responses_ws_url = resolved_responses_ws_url
+        self.responses_ws_state = resolved_responses_ws_state
         self.responses_transport_provider = resolved_responses_transport_provider
         # Transport/provider/base/ws_url changes invalidate sticky auto-SSE disable.
         if routing_changed or credentials_changed:
@@ -327,6 +330,7 @@ class CLIAgentSetupMixin:
             "api_mode": self.api_mode,
             "responses_transport": getattr(self, "responses_transport", "sse"),
             "responses_ws_url": getattr(self, "responses_ws_url", None),
+            "responses_ws_state": bool(getattr(self, "responses_ws_state", False)),
             "responses_transport_provider": getattr(
                 self, "responses_transport_provider", None,
             ),
@@ -345,6 +349,7 @@ class CLIAgentSetupMixin:
                 runtime["api_mode"],
                 runtime["responses_transport"],
                 runtime["responses_ws_url"],
+                runtime["responses_ws_state"],
                 runtime["responses_transport_provider"],
                 runtime["command"],
                 tuple(runtime["args"]),
@@ -512,6 +517,7 @@ class CLIAgentSetupMixin:
                 "api_mode": self.api_mode,
                 "responses_transport": getattr(self, "responses_transport", "sse"),
                 "responses_ws_url": getattr(self, "responses_ws_url", None),
+                "responses_ws_state": bool(getattr(self, "responses_ws_state", False)),
                 "responses_transport_provider": getattr(
                     self, "responses_transport_provider", None,
                 ),
@@ -529,6 +535,7 @@ class CLIAgentSetupMixin:
                 api_mode=runtime.get("api_mode"),
                 responses_transport=runtime.get("responses_transport", "sse"),
                 responses_ws_url=runtime.get("responses_ws_url"),
+                responses_ws_state=runtime.get("responses_ws_state", False),
                 responses_transport_provider=runtime.get("responses_transport_provider"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
@@ -609,6 +616,7 @@ class CLIAgentSetupMixin:
                 runtime.get("api_mode"),
                 runtime.get("responses_transport", "sse"),
                 runtime.get("responses_ws_url"),
+                runtime.get("responses_ws_state", False),
                 runtime.get("responses_transport_provider"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),

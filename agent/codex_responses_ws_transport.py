@@ -135,6 +135,7 @@ def build_generic_ws_identity(
     base_url: Any,
     model: Any,
     responses_ws_url: Any = None,
+    responses_ws_state: Any = None,
     transport: Any = None,
 ) -> tuple[Any, ...]:
     """Build a sticky-disable identity that includes WS endpoint and mode."""
@@ -144,6 +145,7 @@ def build_generic_ws_identity(
         str(base_url or "").rstrip("/"),
         str(model or ""),
         str(responses_ws_url or "").strip(),
+        bool(responses_ws_state),
         normalize_responses_transport(transport),
     )
 

@@ -1348,6 +1348,7 @@ def try_recover_primary_transport(
         agent.api_mode = rt["api_mode"]
         agent.responses_transport = rt.get("responses_transport", "sse")
         agent.responses_ws_url = rt.get("responses_ws_url")
+        agent.responses_ws_state = bool(rt.get("responses_ws_state", False))
         agent.responses_transport_provider = rt.get(
             "responses_transport_provider"
         )
@@ -1586,6 +1587,7 @@ def restore_primary_runtime(agent) -> bool:
         agent.api_mode = rt["api_mode"]
         agent.responses_transport = rt.get("responses_transport", "sse")
         agent.responses_ws_url = rt.get("responses_ws_url")
+        agent.responses_ws_state = bool(rt.get("responses_ws_state", False))
         agent.responses_transport_provider = rt.get(
             "responses_transport_provider"
         )
@@ -2623,6 +2625,7 @@ def switch_model(
     api_mode='',
     responses_transport='sse',
     responses_ws_url=None,
+    responses_ws_state=False,
     responses_transport_provider=None,
     request_overrides=None,
 ):
@@ -2689,6 +2692,7 @@ def switch_model(
             "api_key",
             "responses_transport",
             "responses_ws_url",
+            "responses_ws_state",
             "responses_transport_provider",
             "_generic_ws_auto_disabled_for",
             "client",
@@ -2770,6 +2774,7 @@ def switch_model(
         agent.responses_ws_url = (
             str(responses_ws_url).strip() if responses_ws_url else None
         )
+        agent.responses_ws_state = bool(responses_ws_state)
         agent.responses_transport_provider = (
             str(responses_transport_provider).strip().lower()
             if responses_transport_provider
@@ -3035,6 +3040,7 @@ def switch_model(
         "api_key": getattr(agent, "api_key", ""),
         "responses_transport": getattr(agent, "responses_transport", "sse"),
         "responses_ws_url": getattr(agent, "responses_ws_url", None),
+        "responses_ws_state": bool(getattr(agent, "responses_ws_state", False)),
         "responses_transport_provider": getattr(
             agent, "responses_transport_provider", None
         ),

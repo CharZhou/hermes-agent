@@ -35,6 +35,7 @@ from typing import Dict, Any, Optional, List, Tuple, Set
 
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -1393,6 +1394,7 @@ def _normalize_custom_provider_entry(
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
         "responses_transport", "responses_ws_url",
+        "responses_ws_state",
         "ssl_ca_cert", "ssl_verify",
     }
     for camel, snake in _CAMEL_ALIASES.items():
@@ -1546,6 +1548,12 @@ def _normalize_custom_provider_entry(
     if isinstance(responses_ws_url, str) and responses_ws_url.strip():
         normalized["responses_ws_url"] = responses_ws_url.strip()
 
+    responses_ws_state = entry.get("responses_ws_state")
+    if isinstance(responses_ws_state, bool):
+        normalized["responses_ws_state"] = responses_ws_state
+    elif is_truthy_value(responses_ws_state):
+        normalized["responses_ws_state"] = True
+
     # Per-provider extra HTTP headers (proxies, gateways, custom auth).
     # Values may carry credentials (e.g. CF-Access-Client-Secret) — never
     # log them anywhere downstream.
@@ -1594,6 +1602,7 @@ def _custom_provider_entry_to_provider_config(
         "extra_headers",
         "responses_transport",
         "responses_ws_url",
+        "responses_ws_state",
         "ssl_ca_cert",
         "ssl_verify",
     ):

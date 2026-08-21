@@ -51,6 +51,57 @@ def test_generic_ws_eligibility_is_limited_to_named_custom_codex_providers():
     )
 
 
+def test_named_provider_responses_ws_state_defaults_false(monkeypatch):
+    from hermes_cli import runtime_provider as rp
+    from hermes_cli import config as cfg
+
+    config = {
+        "custom_providers": [
+            {
+                "name": "relay",
+                "provider_key": "relay",
+                "base_url": "https://relay.example/v1",
+                "api_key": "test-key",
+                "api_mode": "codex_responses",
+            }
+        ]
+    }
+    monkeypatch.setattr(cfg, "load_config", lambda: config)
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+    monkeypatch.setattr(
+        rp, "get_compatible_custom_providers", lambda cfg: cfg.get("custom_providers")
+    )
+
+    runtime = rp.resolve_runtime_provider(requested="relay")
+    assert runtime["responses_ws_state"] is False
+
+
+def test_named_provider_responses_ws_state_round_trips_true(monkeypatch):
+    from hermes_cli import runtime_provider as rp
+    from hermes_cli import config as cfg
+
+    config = {
+        "custom_providers": [
+            {
+                "name": "relay",
+                "provider_key": "relay",
+                "base_url": "https://relay.example/v1",
+                "api_key": "test-key",
+                "api_mode": "codex_responses",
+                "responses_ws_state": True,
+            }
+        ]
+    }
+    monkeypatch.setattr(cfg, "load_config", lambda: config)
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+    monkeypatch.setattr(
+        rp, "get_compatible_custom_providers", lambda cfg: cfg.get("custom_providers")
+    )
+
+    runtime = rp.resolve_runtime_provider(requested="relay")
+    assert runtime["responses_ws_state"] is True
+
+
 @pytest.mark.parametrize(
     ("base_url", "expected"),
     [
@@ -141,6 +192,7 @@ def test_build_generic_ws_identity_includes_ws_url_and_transport():
         base_url="https://relay.example.com/v1",
         model="gpt-5",
         responses_ws_url=None,
+        responses_ws_state=False,
         transport="auto",
     )
     b = build_generic_ws_identity(
@@ -149,6 +201,7 @@ def test_build_generic_ws_identity_includes_ws_url_and_transport():
         base_url="https://relay.example.com/v1",
         model="gpt-5",
         responses_ws_url="wss://relay.example.com/ws/responses",
+        responses_ws_state=True,
         transport="auto",
     )
     assert a != b

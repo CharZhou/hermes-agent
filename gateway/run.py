@@ -2877,6 +2877,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "api_mode": runtime.get("api_mode"),
         "responses_transport": runtime.get("responses_transport", "sse"),
         "responses_ws_url": runtime.get("responses_ws_url"),
+        "responses_ws_state": runtime.get("responses_ws_state", False),
         "responses_transport_provider": runtime.get("responses_transport_provider"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
@@ -3030,6 +3031,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "api_mode": runtime.get("api_mode"),
         "responses_transport": runtime.get("responses_transport", "sse"),
         "responses_ws_url": runtime.get("responses_ws_url"),
+        "responses_ws_state": runtime.get("responses_ws_state", False),
         "responses_transport_provider": runtime.get("responses_transport_provider"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
@@ -3092,6 +3094,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "api_mode": runtime.get("api_mode"),
                     "responses_transport": runtime.get("responses_transport", "sse"),
                     "responses_ws_url": runtime.get("responses_ws_url"),
+                    "responses_ws_state": runtime.get("responses_ws_state", False),
                     "responses_transport_provider": runtime.get("responses_transport_provider"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
@@ -8238,6 +8241,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "api_mode": runtime_kwargs.get("api_mode"),
             "responses_transport": runtime_kwargs.get("responses_transport", "sse"),
             "responses_ws_url": runtime_kwargs.get("responses_ws_url"),
+            "responses_ws_state": runtime_kwargs.get("responses_ws_state", False),
             "responses_transport_provider": runtime_kwargs.get("responses_transport_provider"),
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
@@ -8258,6 +8262,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime["api_mode"],
                 runtime["responses_transport"],
                 runtime["responses_ws_url"],
+                runtime["responses_ws_state"],
                 runtime["responses_transport_provider"],
                 runtime["command"],
                 tuple(runtime["args"]),
@@ -26287,6 +26292,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime.get("api_mode", ""),
                 runtime.get("responses_transport", "sse"),
                 runtime.get("responses_ws_url", ""),
+                runtime.get("responses_ws_state", False),
                 runtime.get("responses_transport_provider", ""),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
@@ -26343,6 +26349,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "base_url": persisted.get("base_url"),
             "responses_transport": persisted.get("responses_transport"),
             "responses_ws_url": persisted.get("responses_ws_url"),
+            "responses_ws_state": persisted.get("responses_ws_state"),
             "responses_transport_provider": persisted.get(
                 "responses_transport_provider"
             ),
@@ -26361,6 +26368,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for key in (
                     "responses_transport",
                     "responses_ws_url",
+                    "responses_ws_state",
                     "responses_transport_provider",
                 ):
                     if not override.get(key) and runtime.get(key) is not None:
@@ -26407,6 +26415,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "api_mode",
             "responses_transport",
             "responses_ws_url",
+            "responses_ws_state",
             "responses_transport_provider",
             "credential_pool",
         ):

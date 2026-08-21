@@ -591,6 +591,7 @@ def init_agent(
     requested_provider: str = None,
     responses_transport: str = "sse",
     responses_ws_url: str = None,
+    responses_ws_state: bool = False,
     responses_transport_provider: str = None,
 ):
     """
@@ -699,6 +700,7 @@ def init_agent(
         if isinstance(responses_ws_url, str) and responses_ws_url.strip()
         else None
     )
+    agent.responses_ws_state = bool(responses_ws_state)
     agent.responses_transport_provider = (
         responses_transport_provider.strip().lower()
         if isinstance(responses_transport_provider, str)

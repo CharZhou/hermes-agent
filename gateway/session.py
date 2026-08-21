@@ -759,6 +759,7 @@ PERSISTABLE_MODEL_OVERRIDE_KEYS = (
     "base_url",
     "responses_transport",
     "responses_ws_url",
+    "responses_ws_state",
     "responses_transport_provider",
 )
 

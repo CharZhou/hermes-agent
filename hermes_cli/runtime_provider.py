@@ -48,7 +48,7 @@ from hermes_cli.config import (
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.providers import is_official_openai_host
-from utils import base_url_host_matches, base_url_hostname, env_int
+from utils import base_url_host_matches, base_url_hostname, env_int, is_truthy_value
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -716,6 +716,10 @@ def _lift_responses_ws_transport(
     ws_url = entry.get("responses_ws_url")
     if isinstance(ws_url, str) and ws_url.strip():
         result["responses_ws_url"] = ws_url.strip()
+    ws_state = entry.get("responses_ws_state")
+    result["responses_ws_state"] = (
+        ws_state if isinstance(ws_state, bool) else bool(is_truthy_value(ws_state))
+    )
     result["responses_transport_provider"] = identity
 
 
@@ -1213,6 +1217,7 @@ def _resolve_named_custom_runtime(
         for key in (
             "responses_transport",
             "responses_ws_url",
+            "responses_ws_state",
             "responses_transport_provider",
         ):
             if key in custom_provider:
@@ -1276,6 +1281,7 @@ def _resolve_named_custom_runtime(
     for key in (
         "responses_transport",
         "responses_ws_url",
+        "responses_ws_state",
         "responses_transport_provider",
     ):
         if key in custom_provider:

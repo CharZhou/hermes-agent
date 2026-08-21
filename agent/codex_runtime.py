@@ -1421,6 +1421,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     )
     transport_provider = getattr(agent, "responses_transport_provider", None) or agent.provider
     responses_ws_url = getattr(agent, "responses_ws_url", None)
+    responses_ws_state = bool(getattr(agent, "responses_ws_state", False))
     model_name = api_kwargs.get("model") or getattr(agent, "model", None)
     ws_identity = build_generic_ws_identity(
         session_id=getattr(agent, "session_id", None),
@@ -1428,6 +1429,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         base_url=getattr(agent, "base_url", None),
         model=model_name,
         responses_ws_url=responses_ws_url,
+        responses_ws_state=responses_ws_state,
         transport=transport,
     )
     ws_eligible = transport in {"websocket", "auto"} and is_generic_codex_ws_eligible(

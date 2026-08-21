@@ -899,6 +899,7 @@ class AIAgent:
         api_mode='',
         responses_transport='sse',
         responses_ws_url=None,
+        responses_ws_state=False,
         responses_transport_provider=None,
         request_overrides=None,
     ):
@@ -913,6 +914,7 @@ class AIAgent:
             api_mode,
             responses_transport,
             responses_ws_url,
+            responses_ws_state,
             responses_transport_provider,
             request_overrides,
         )
