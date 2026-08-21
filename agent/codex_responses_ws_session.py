@@ -243,6 +243,12 @@ class ResponsesWebsocketSession:
         )
 
     def commit_terminal_state(self, api_kwargs: Mapping[str, Any], terminal_event: Any) -> None:
+        if (
+            not isinstance(terminal_event, Mapping)
+            or terminal_event.get("type") != "response.completed"
+        ):
+            self.reset("terminal response not completed")
+            return
         self.commit_snapshot(api_kwargs, _terminal_response_id(terminal_event), terminal_event)
 
     def build_request(self, api_kwargs: Mapping[str, Any]) -> tuple[dict[str, Any], str]:
@@ -671,12 +677,31 @@ class ResponsesWebsocketSession:
                 continue
 
             last_event_at = time.monotonic()
-            if isinstance(frame, bytes):
-                frame = frame.decode("utf-8")
-            event = json.loads(frame)
-            if not isinstance(event, dict):
+            try:
+                if isinstance(frame, bytes):
+                    frame = frame.decode("utf-8")
+                event = json.loads(frame)
+                if not isinstance(event, dict):
+                    continue
+                event = _normalize_terminal_event(event)
+            except Exception as exc:
+                self._event_queue.put(
+                    _WorkerEvent(
+                        kind="error",
+                        generation=active_generation,
+                        request_id=active_request_id,
+                        payload=GenericWsStartedError(
+                            f"Responses WebSocket stream failed after request start: {exc}",
+                            status_code=getattr(exc, "status_code", None)
+                            if isinstance(getattr(exc, "status_code", None), int)
+                            else None,
+                        ),
+                    )
+                )
+                _close_socket(websocket)
+                websocket = None
+                active_request_id = None
                 continue
-            event = _normalize_terminal_event(event)
             if event.get("type") == "error":
                 self._event_queue.put(
                     _WorkerEvent(

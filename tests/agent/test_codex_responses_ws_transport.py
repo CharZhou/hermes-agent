@@ -284,6 +284,28 @@ class _FakeSocket:
         self.closed = True
 
 
+def _make_responses_ws_session(connect, *, state_enabled=True):
+    from agent.codex_responses_ws_session import ResponsesWebsocketSession
+
+    return ResponsesWebsocketSession(
+        state_enabled=state_enabled,
+        connect=connect,
+        client=object(),
+        api_key="test-key",
+        headers={},
+        provider="custom:sub2api",
+        base_url="https://relay.example.com/v1",
+        responses_ws_url=None,
+        transport="websocket",
+        timeout=0.05,
+        idle_timeout=0.2,
+        recv_poll_timeout=0.01,
+        ping_interval=30.0,
+        ping_timeout=60.0,
+        close_timeout=0.05,
+    )
+
+
 def test_generic_ws_stream_sends_response_create_and_reuses_event_consumer(monkeypatch):
     import agent.codex_responses_ws_transport as transport
 
@@ -325,7 +347,6 @@ def test_generic_ws_stream_sends_response_create_and_reuses_event_consumer(monke
 
 def test_generic_ws_stateful_mode_requires_caller_owned_session(monkeypatch):
     import agent.codex_responses_ws_transport as transport
-    from agent.codex_responses_ws_session import ResponsesWebsocketSession
 
     assert not hasattr(transport, "_GENERIC_WS_SESSIONS")
     socket = _FakeSocket(
@@ -343,23 +364,7 @@ def test_generic_ws_stateful_mode_requires_caller_owned_session(monkeypatch):
         return socket
 
     monkeypatch.setattr(transport, "_connect_websocket", connect)
-    session = ResponsesWebsocketSession(
-        state_enabled=True,
-        connect=connect,
-        client=object(),
-        api_key="test-key",
-        headers={},
-        provider="custom:sub2api",
-        base_url="https://relay.example.com/v1",
-        responses_ws_url=None,
-        transport="websocket",
-        timeout=0.05,
-        idle_timeout=0.2,
-        recv_poll_timeout=0.01,
-        ping_interval=30.0,
-        ping_timeout=60.0,
-        close_timeout=5.0,
-    )
+    session = _make_responses_ws_session(connect)
 
     first = transport.run_generic_codex_ws_stream(
         api_kwargs={"model": "gpt-5", "input": [{"id": "a"}]},
@@ -390,6 +395,143 @@ def test_generic_ws_stateful_mode_requires_caller_owned_session(monkeypatch):
     assert second == ["response.created", "response.completed"]
     assert connect_calls["n"] == 1
     assert json.loads(socket.sent[1])["previous_response_id"] == "resp-1"
+    session.close()
+
+
+@pytest.mark.parametrize(
+    ("frame", "message"),
+    [
+        ("{not-json", "Expecting property name"),
+        (b"\xff", "utf-8"),
+    ],
+)
+def test_stateful_ws_malformed_frame_after_send_unblocks_caller(frame, message):
+    import agent.codex_responses_ws_transport as transport
+
+    socket = _FakeSocket([frame])
+    session = _make_responses_ws_session(lambda *_args, **_kwargs: socket)
+
+    try:
+        with pytest.raises(transport.GenericWsStartedError) as excinfo:
+            transport.run_generic_codex_ws_stream(
+                api_kwargs={"model": "gpt-5", "input": "hi"},
+                api_key="test-key",
+                provider="custom:sub2api",
+                base_url="https://relay.example.com/v1",
+                session_id="session-stateful-bad-frame",
+                transport="websocket",
+                collect_events=lambda events, _client: list(events),
+                interrupted=lambda: False,
+                responses_ws_state=True,
+                responses_ws_session=session,
+            )
+        assert message in str(excinfo.value)
+        assert excinfo.value.retryable is False
+        assert socket.sent
+        assert socket.closed is True
+        assert session.snapshot is None
+    finally:
+        session.close()
+
+
+def test_stateful_ws_event_normalization_error_after_send_unblocks_caller(monkeypatch):
+    import agent.codex_responses_ws_transport as transport
+    import agent.codex_responses_ws_session as session_mod
+
+    socket = _FakeSocket(
+        [json.dumps({"type": "response.done", "response": {"status": "completed"}})]
+    )
+    session = _make_responses_ws_session(lambda *_args, **_kwargs: socket)
+
+    def fail_normalize(_event):
+        raise ValueError("normalization failed")
+
+    monkeypatch.setattr(session_mod, "_normalize_terminal_event", fail_normalize)
+
+    try:
+        with pytest.raises(transport.GenericWsStartedError) as excinfo:
+            transport.run_generic_codex_ws_stream(
+                api_kwargs={"model": "gpt-5", "input": "hi"},
+                api_key="test-key",
+                provider="custom:sub2api",
+                base_url="https://relay.example.com/v1",
+                session_id="session-stateful-normalize",
+                transport="websocket",
+                collect_events=lambda events, _client: list(events),
+                interrupted=lambda: False,
+                responses_ws_state=True,
+                responses_ws_session=session,
+            )
+        assert "normalization failed" in str(excinfo.value)
+        assert socket.closed is True
+        assert session.snapshot is None
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize(
+    "terminal_frame",
+    [
+        {"type": "response.failed", "response": {"id": "resp-failed"}},
+        {"type": "response.cancelled", "response": {"id": "resp-cancelled"}},
+        {"type": "response.incomplete", "response": {"id": "resp-incomplete"}},
+        {
+            "type": "response.done",
+            "response": {"id": "resp-done-incomplete", "status": "incomplete"},
+        },
+    ],
+)
+def test_stateful_ws_unsuccessful_terminal_does_not_seed_incremental_snapshot(terminal_frame):
+    import agent.codex_responses_ws_transport as transport
+
+    first_socket = _FakeSocket([json.dumps(terminal_frame)])
+    second_socket = _FakeSocket(
+        [
+            json.dumps({"type": "response.created", "response": {"id": "resp-2"}}),
+            json.dumps({"type": "response.completed", "response": {"id": "resp-2"}}),
+        ]
+    )
+    sockets = [first_socket, second_socket]
+
+    def connect(*_args, **_kwargs):
+        return sockets.pop(0)
+
+    session = _make_responses_ws_session(connect)
+
+    try:
+        first = transport.run_generic_codex_ws_stream(
+            api_kwargs={"model": "gpt-5", "input": [{"id": "a"}]},
+            api_key="test-key",
+            provider="custom:sub2api",
+            base_url="https://relay.example.com/v1",
+            session_id="session-stateful-terminal",
+            transport="websocket",
+            collect_events=lambda events, _client: [event.type for event in events],
+            interrupted=lambda: False,
+            responses_ws_state=True,
+            responses_ws_session=session,
+        )
+        second = transport.run_generic_codex_ws_stream(
+            api_kwargs={"model": "gpt-5", "input": [{"id": "a"}, {"id": "b"}]},
+            api_key="test-key",
+            provider="custom:sub2api",
+            base_url="https://relay.example.com/v1",
+            session_id="session-stateful-terminal",
+            transport="websocket",
+            collect_events=lambda events, _client: [event.type for event in events],
+            interrupted=lambda: False,
+            responses_ws_state=True,
+            responses_ws_session=session,
+        )
+
+        assert first[-1] in {"response.failed", "response.cancelled", "response.incomplete"}
+        assert second == ["response.created", "response.completed"]
+        second_payload = json.loads(second_socket.sent[0])
+        assert "previous_response_id" not in second_payload
+        assert second_payload["input"] == [{"id": "a"}, {"id": "b"}]
+        assert first_socket.closed is True
+    finally:
+        session.close()
 
 
 def test_generic_ws_stateful_mode_without_session_fails_before_start() -> None:
