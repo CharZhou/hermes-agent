@@ -90,20 +90,15 @@ def _close_socket(websocket: Any) -> None:
 def _ensure_responses_beta_header(headers: Mapping[str, str]) -> dict[str, str]:
     result = dict(headers)
     existing_name: str | None = None
-    existing_value = ""
     for key, value in result.items():
         if key.lower() == "openai-beta":
             existing_name = key
-            existing_value = str(value or "").strip()
             break
-    token = "responses=v2"
+    token = "responses_websockets=2026-02-06"
     if existing_name is None:
         result["OpenAI-Beta"] = token
         return result
-    parts = [part.strip() for part in existing_value.split(",") if part.strip()]
-    if token not in parts:
-        parts.append(token)
-    result[existing_name] = ", ".join(parts) if parts else token
+    result[existing_name] = token
     return result
 
 
@@ -220,6 +215,8 @@ class ResponsesWebsocketSession:
         self._event_queue: queue.Queue[_WorkerEvent] = queue.Queue()
         self._worker: threading.Thread | None = None
         self._worker_lock = threading.Lock()
+        self._request_condition = threading.Condition()
+        self._request_in_flight = False
         self._closed = False
         self._generation = 0
         self._request_ids = count(1)
@@ -261,6 +258,7 @@ class ResponsesWebsocketSession:
         with self._worker_lock:
             if self._closed:
                 return
+            self._clear_response_state()
             self._generation += 1
             self._command_queue.put(_WorkerCommand(kind="reset", generation=self._generation))
 
@@ -270,11 +268,22 @@ class ResponsesWebsocketSession:
             if self._closed:
                 return
             self._closed = True
+            self._clear_response_state()
             self._generation += 1
             self._command_queue.put(_WorkerCommand(kind="close", generation=self._generation))
             worker = self._worker
+        with self._request_condition:
+            self._request_condition.notify_all()
         if worker is not None:
             worker.join(timeout=max(self.timeout, self.close_timeout or 0.0, 0.1))
+
+    def _clear_response_state(self) -> None:
+        self._snapshot = None
+        while True:
+            try:
+                self._event_queue.get_nowait()
+            except queue.Empty:
+                return
 
     def stream_request(
         self,
@@ -289,6 +298,37 @@ class ResponsesWebsocketSession:
                 "Responses WebSocket session is closed",
                 retryable=False,
             )
+
+        with self._request_condition:
+            while self._request_in_flight and not self._closed:
+                self._request_condition.wait()
+            if self._closed:
+                raise GenericWsNotStartedError(
+                    "Responses WebSocket session is closed",
+                    retryable=False,
+                )
+            self._request_in_flight = True
+
+        try:
+            return self._stream_request_exclusive(
+                api_kwargs,
+                collect_events=collect_events,
+                interrupted=interrupted,
+                register_abort=register_abort,
+            )
+        finally:
+            with self._request_condition:
+                self._request_in_flight = False
+                self._request_condition.notify_all()
+
+    def _stream_request_exclusive(
+        self,
+        api_kwargs: Mapping[str, Any],
+        *,
+        collect_events: Callable[[Any], Any],
+        interrupted: Callable[[], bool] | None,
+        register_abort: Callable[[Callable[[str], None]], None] | None,
+    ) -> Any:
 
         allow_full_retry = True
         force_full = False
@@ -466,8 +506,8 @@ class ResponsesWebsocketSession:
                             active_request_id = None
                     continue
                 if command.kind == "send":
-                    active_request_id = command.request_id
-                    active_generation = command.generation
+                    request_id = command.request_id or 0
+                    started = False
                     try:
                         if websocket is None or generation != command.generation:
                             _close_socket(websocket)
@@ -475,6 +515,9 @@ class ResponsesWebsocketSession:
                             generation = command.generation
                             websocket = self._open_websocket(command.api_kwargs or {})
                         payload = json.dumps({"type": "response.create", **dict(command.request_body or {})})
+                        active_request_id = request_id
+                        active_generation = command.generation
+                        started = True
                         websocket.send(payload)
                         last_event_at = time.monotonic()
                     except GenericWsNotStartedError as exc:
@@ -482,7 +525,7 @@ class ResponsesWebsocketSession:
                             _WorkerEvent(
                                 kind="error",
                                 generation=command.generation,
-                                request_id=command.request_id or 0,
+                                request_id=request_id,
                                 payload=exc,
                             )
                         )
@@ -494,12 +537,21 @@ class ResponsesWebsocketSession:
                             _WorkerEvent(
                                 kind="error",
                                 generation=command.generation,
-                                request_id=command.request_id or 0,
-                                payload=GenericWsStartedError(
-                                    f"Responses WebSocket stream failed after request start: {exc}",
-                                    status_code=getattr(exc, "status_code", None)
-                                    if isinstance(getattr(exc, "status_code", None), int)
-                                    else None,
+                                request_id=request_id,
+                                payload=(
+                                    GenericWsStartedError(
+                                        f"Responses WebSocket stream failed after request start: {exc}",
+                                        status_code=getattr(exc, "status_code", None)
+                                        if isinstance(getattr(exc, "status_code", None), int)
+                                        else None,
+                                    )
+                                    if started
+                                    else GenericWsNotStartedError(
+                                        f"Responses WebSocket connection failed: {exc}",
+                                        status_code=getattr(exc, "status_code", None)
+                                        if isinstance(getattr(exc, "status_code", None), int)
+                                        else None,
+                                    )
                                 ),
                             )
                         )

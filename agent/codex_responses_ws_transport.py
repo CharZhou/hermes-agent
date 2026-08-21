@@ -9,7 +9,6 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
-import threading
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +36,6 @@ DEFAULT_IDLE_TIMEOUT_SECONDS = 180.0
 # Pre-send failures may open a fresh WebSocket. Once ``send`` is invoked,
 # retries are prohibited because Responses has no reliable idempotency key.
 DEFAULT_WS_MAX_ATTEMPTS = 3
-_SESSION_CACHE_LOCK = threading.Lock()
-_GENERIC_WS_SESSIONS: dict[tuple[Any, ...], Any] = {}
 
 
 class GenericWsNotStartedError(RuntimeError):
@@ -356,6 +353,7 @@ def run_generic_codex_ws_stream(
     register_connection_abort: Callable[[Callable[[str], None]], None] | None = None,
     max_attempts: int = DEFAULT_WS_MAX_ATTEMPTS,
     responses_ws_state: bool = False,
+    responses_ws_session: Any = None,
     ping_interval: float | None = 20.0,
     ping_timeout: float | None = 20.0,
     close_timeout: float | None = 10.0,
@@ -394,39 +392,12 @@ def run_generic_codex_ws_stream(
         idle_limit = DEFAULT_IDLE_TIMEOUT_SECONDS
 
     if responses_ws_state:
-        from agent.codex_responses_ws_session import ResponsesWebsocketSession
-
-        identity = build_generic_ws_identity(
-            session_id=session_id,
-            transport_provider=provider,
-            base_url=base_url,
-            model=api_kwargs.get("model"),
-            responses_ws_url=responses_ws_url,
-            responses_ws_state=responses_ws_state,
-            transport=transport,
-        )
-        with _SESSION_CACHE_LOCK:
-            session = _GENERIC_WS_SESSIONS.get(identity)
-            if session is None or session.is_closed():
-                session = ResponsesWebsocketSession(
-                    state_enabled=True,
-                    connect=_connect_websocket,
-                    client=client,
-                    api_key=api_key,
-                    headers=headers,
-                    provider=provider,
-                    base_url=base_url,
-                    responses_ws_url=responses_ws_url,
-                    transport=transport,
-                    timeout=connect_timeout,
-                    idle_timeout=idle_limit,
-                    recv_poll_timeout=poll_timeout,
-                    ping_interval=ping_interval,
-                    ping_timeout=ping_timeout,
-                    close_timeout=close_timeout,
-                )
-                _GENERIC_WS_SESSIONS[identity] = session
-        return session.stream_request(
+        if responses_ws_session is None:
+            raise GenericWsNotStartedError(
+                "Responses WebSocket state requires a caller-owned session",
+                retryable=False,
+            )
+        return responses_ws_session.stream_request(
             api_kwargs=api_kwargs,
             collect_events=lambda events: collect_events(events, None),
             interrupted=interrupted,

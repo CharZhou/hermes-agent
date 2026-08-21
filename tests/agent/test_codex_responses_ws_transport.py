@@ -323,10 +323,11 @@ def test_generic_ws_stream_sends_response_create_and_reuses_event_consumer(monke
     assert result.output_text == "hello"
 
 
-def test_generic_ws_stateful_mode_reuses_cached_session(monkeypatch):
+def test_generic_ws_stateful_mode_requires_caller_owned_session(monkeypatch):
     import agent.codex_responses_ws_transport as transport
+    from agent.codex_responses_ws_session import ResponsesWebsocketSession
 
-    transport._GENERIC_WS_SESSIONS.clear()
+    assert not hasattr(transport, "_GENERIC_WS_SESSIONS")
     socket = _FakeSocket(
         [
             json.dumps({"type": "response.created", "response": {"id": "resp-1"}}),
@@ -342,6 +343,23 @@ def test_generic_ws_stateful_mode_reuses_cached_session(monkeypatch):
         return socket
 
     monkeypatch.setattr(transport, "_connect_websocket", connect)
+    session = ResponsesWebsocketSession(
+        state_enabled=True,
+        connect=connect,
+        client=object(),
+        api_key="test-key",
+        headers={},
+        provider="custom:sub2api",
+        base_url="https://relay.example.com/v1",
+        responses_ws_url=None,
+        transport="websocket",
+        timeout=0.05,
+        idle_timeout=0.2,
+        recv_poll_timeout=0.01,
+        ping_interval=30.0,
+        ping_timeout=60.0,
+        close_timeout=5.0,
+    )
 
     first = transport.run_generic_codex_ws_stream(
         api_kwargs={"model": "gpt-5", "input": [{"id": "a"}]},
@@ -353,6 +371,7 @@ def test_generic_ws_stateful_mode_reuses_cached_session(monkeypatch):
         collect_events=lambda events, _client: [event.type for event in events],
         interrupted=lambda: False,
         responses_ws_state=True,
+        responses_ws_session=session,
     )
     second = transport.run_generic_codex_ws_stream(
         api_kwargs={"model": "gpt-5", "input": [{"id": "a"}, {"id": "b"}]},
@@ -364,13 +383,30 @@ def test_generic_ws_stateful_mode_reuses_cached_session(monkeypatch):
         collect_events=lambda events, _client: [event.type for event in events],
         interrupted=lambda: False,
         responses_ws_state=True,
+        responses_ws_session=session,
     )
 
     assert first == ["response.created", "response.completed"]
     assert second == ["response.created", "response.completed"]
     assert connect_calls["n"] == 1
     assert json.loads(socket.sent[1])["previous_response_id"] == "resp-1"
-    transport._GENERIC_WS_SESSIONS.clear()
+
+
+def test_generic_ws_stateful_mode_without_session_fails_before_start() -> None:
+    import agent.codex_responses_ws_transport as transport
+
+    with pytest.raises(transport.GenericWsNotStartedError):
+        transport.run_generic_codex_ws_stream(
+            api_kwargs={"model": "gpt-5", "input": [{"id": "a"}]},
+            api_key="test-key",
+            provider="custom:sub2api",
+            base_url="https://relay.example.com/v1",
+            session_id="session-stateful",
+            transport="websocket",
+            collect_events=lambda events, _client: [event.type for event in events],
+            interrupted=lambda: False,
+            responses_ws_state=True,
+        )
 
 
 def test_ws_failure_after_send_is_irrevocable_even_when_send_raises(monkeypatch):

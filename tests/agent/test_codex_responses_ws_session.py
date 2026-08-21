@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import queue
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
+from agent.codex_responses_ws_transport import GenericWsNotStartedError
 from agent.codex_responses_ws_session import (
     ResponsesRequestSnapshot,
     ResponsesWebsocketSession,
@@ -314,7 +317,7 @@ def test_stream_request_merges_headers_and_beta_header() -> None:
         "_Client",
         (),
         {
-            "default_headers": {"X-Default": "one"},
+            "default_headers": {"X-Default": "one", "OpenAI-Beta": "responses=v2"},
             "_custom_headers": {"X-Custom": "two", "Authorization": "Bearer override"},
         },
     )()
@@ -352,7 +355,21 @@ def test_stream_request_merges_headers_and_beta_header() -> None:
     assert headers["X-Explicit"] == "three"
     assert headers["X-Request"] == "four"
     assert headers["Authorization"] == "Bearer override"
-    assert headers["OpenAI-Beta"] == "responses=v2"
+    assert headers["OpenAI-Beta"] == "responses_websockets=2026-02-06"
+
+
+def test_reset_and_close_clear_snapshot_state() -> None:
+    session = make_session(state_enabled=True)
+    session.commit_snapshot(api_kwargs(), "resp-1", {"turn": 1})
+
+    session.reset("discard stale response state")
+
+    assert session.snapshot is None
+
+    session.commit_snapshot(api_kwargs(), "resp-2", {"turn": 2})
+    session.close()
+
+    assert session.snapshot is None
 
 
 def test_previous_response_not_found_retries_with_full_input() -> None:
@@ -414,6 +431,21 @@ def test_previous_response_not_found_retries_with_full_input() -> None:
         ping_timeout=60.0,
         close_timeout=5.0,
     )
+    session.commit_terminal_state(
+        {"model": "gpt-5", "input": [{"id": "a"}]},
+        {"response": {"id": "stale-resp"}},
+    )
+
+    observed_snapshot_before_second_connect: list[Any] = []
+
+    original_connect = connect
+
+    def connect_with_snapshot_probe(*args: Any, **kwargs: Any) -> _ScriptedSocket:
+        if connect_calls["n"] == 1:
+            observed_snapshot_before_second_connect.append(session.snapshot)
+        return original_connect(*args, **kwargs)
+
+    session.connect = connect_with_snapshot_probe
 
     result = session.stream_request(
         api_kwargs={"model": "gpt-5", "input": [{"id": "a"}, {"id": "b"}]},
@@ -425,8 +457,129 @@ def test_previous_response_not_found_retries_with_full_input() -> None:
     assert result == ["response.created", "response.output_text.delta", "response.completed"]
     assert connect_calls["n"] == 2
     assert first.closed is True
+    assert observed_snapshot_before_second_connect == [None]
+    assert first.sent[0]["previous_response_id"] == "stale-resp"
+    assert first.sent[0]["input"] == [{"id": "b"}]
     assert second.sent[0]["input"] == [{"id": "a"}, {"id": "b"}]
     assert "previous_response_id" not in second.sent[0]
+    assert session.snapshot is not None
+    assert session.snapshot.response_id == "resp-2"
+
+
+def test_request_serialization_failure_is_not_started_error() -> None:
+    socket = _ScriptedSocket([])
+
+    def connect(*_args: Any, **_kwargs: Any) -> _ScriptedSocket:
+        return socket
+
+    session = ResponsesWebsocketSession(
+        state_enabled=True,
+        connect=connect,
+        client=object(),
+        api_key="test-key",
+        headers={},
+        provider="custom:relay",
+        base_url="https://relay.example.com/v1",
+        transport="websocket",
+        timeout=0.05,
+        idle_timeout=0.2,
+        recv_poll_timeout=0.01,
+        ping_interval=30.0,
+        ping_timeout=60.0,
+        close_timeout=5.0,
+    )
+
+    with pytest.raises(GenericWsNotStartedError):
+        session.stream_request(
+            api_kwargs={"model": "gpt-5", "input": [{"bad": object()}]},
+            collect_events=lambda events: list(events),
+            interrupted=lambda: False,
+            register_abort=None,
+        )
+
+    assert socket.sent == []
+
+
+class _QueueSocket:
+    def __init__(self) -> None:
+        self.frames: queue.Queue[str] = queue.Queue()
+        self.sent: list[dict[str, Any]] = []
+        self.closed = False
+
+    def send(self, payload: str) -> None:
+        self.sent.append(json.loads(payload))
+
+    def recv(self, timeout: float | None = None) -> str:
+        if self.closed:
+            raise OSError("socket closed")
+        try:
+            return self.frames.get(timeout=timeout)
+        except queue.Empty as exc:
+            raise TimeoutError("poll idle") from exc
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_concurrent_stream_requests_are_serialized() -> None:
+    socket = _QueueSocket()
+
+    def connect(*_args: Any, **_kwargs: Any) -> _QueueSocket:
+        return socket
+
+    session = ResponsesWebsocketSession(
+        state_enabled=True,
+        connect=connect,
+        client=object(),
+        api_key="test-key",
+        headers={},
+        provider="custom:relay",
+        base_url="https://relay.example.com/v1",
+        transport="websocket",
+        timeout=0.05,
+        idle_timeout=1.0,
+        recv_poll_timeout=0.01,
+        ping_interval=30.0,
+        ping_timeout=60.0,
+        close_timeout=5.0,
+    )
+    results: list[list[str]] = []
+    errors: list[BaseException] = []
+
+    def run_request(request_id: str) -> None:
+        try:
+            result = session.stream_request(
+                api_kwargs={"model": "gpt-5", "input": [{"id": request_id}]},
+                collect_events=lambda events: [event.type for event in events],
+                interrupted=lambda: False,
+                register_abort=None,
+            )
+            results.append(result)
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=run_request, args=("a",))
+    second = threading.Thread(target=run_request, args=("b",))
+    first.start()
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and len(socket.sent) < 1:
+        time.sleep(0.005)
+    second.start()
+    time.sleep(0.05)
+
+    assert len(socket.sent) == 1
+
+    socket.frames.put(json.dumps({"type": "response.done", "response": {"id": "resp-1", "status": "completed"}}))
+    first.join(timeout=1.0)
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and len(socket.sent) < 2:
+        time.sleep(0.005)
+    socket.frames.put(json.dumps({"type": "response.done", "response": {"id": "resp-2", "status": "completed"}}))
+    second.join(timeout=1.0)
+
+    assert errors == []
+    assert len(socket.sent) == 2
+    assert results == [["response.completed"], ["response.completed"]]
 
 
 def test_close_stops_pump_and_clears_socket() -> None:
