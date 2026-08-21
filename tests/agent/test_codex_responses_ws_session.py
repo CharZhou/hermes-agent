@@ -636,6 +636,57 @@ def test_close_unblocks_active_stream_request() -> None:
     assert isinstance(errors[0], GenericWsStartedError)
 
 
+def test_reset_unblocks_active_stream_request() -> None:
+    socket = _QueueSocket()
+
+    def connect(*_args: Any, **_kwargs: Any) -> _QueueSocket:
+        return socket
+
+    session = ResponsesWebsocketSession(
+        state_enabled=True,
+        connect=connect,
+        client=object(),
+        api_key="test-key",
+        headers={},
+        provider="custom:relay",
+        base_url="https://relay.example.com/v1",
+        transport="websocket",
+        timeout=0.05,
+        idle_timeout=60.0,
+        recv_poll_timeout=0.01,
+        ping_interval=30.0,
+        ping_timeout=60.0,
+        close_timeout=5.0,
+    )
+    errors: list[BaseException] = []
+
+    def run_request() -> None:
+        try:
+            session.stream_request(
+                api_kwargs={"model": "gpt-5", "input": [{"id": "a"}]},
+                collect_events=lambda events: [event.type for event in events],
+                interrupted=lambda: False,
+                register_abort=None,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_request)
+    thread.start()
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and len(socket.sent) < 1:
+        time.sleep(0.005)
+
+    assert len(socket.sent) == 1
+
+    session.reset("external test reset")
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], GenericWsStartedError)
+
+
 def test_close_stops_pump_and_clears_socket() -> None:
     connect = _fake_connect_factory()
     session = ResponsesWebsocketSession(

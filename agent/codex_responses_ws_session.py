@@ -218,6 +218,7 @@ class ResponsesWebsocketSession:
         self._request_condition = threading.Condition()
         self._request_in_flight = False
         self._active_request_identity: tuple[int, int] | None = None
+        self._active_request_thread_ident: int | None = None
         self._closed = False
         self._generation = 0
         self._request_ids = count(1)
@@ -256,12 +257,32 @@ class ResponsesWebsocketSession:
 
     def reset(self, reason: str) -> None:
         del reason
+        active_request: tuple[int, int] | None = None
+        active_request_thread_ident: int | None = None
+        with self._request_condition:
+            active_request = self._active_request_identity
+            active_request_thread_ident = self._active_request_thread_ident
         with self._worker_lock:
             if self._closed:
                 return
             self._clear_response_state()
             self._generation += 1
             self._command_queue.put(_WorkerCommand(kind="reset", generation=self._generation))
+        if (
+            active_request is not None
+            and active_request_thread_ident != threading.get_ident()
+        ):
+            self._event_queue.put(
+                _WorkerEvent(
+                    kind="error",
+                    generation=active_request[0],
+                    request_id=active_request[1],
+                    payload=GenericWsStartedError(
+                        "Responses WebSocket stream failed after request start: "
+                        "session reset during active request"
+                    ),
+                )
+            )
 
     def close(self) -> None:
         active_request: tuple[int, int] | None = None
@@ -360,6 +381,7 @@ class ResponsesWebsocketSession:
                 active_request = (generation, request_id)
                 with self._request_condition:
                     self._active_request_identity = active_request
+                    self._active_request_thread_ident = threading.get_ident()
                 cancel_sent = False
                 locally_interrupted = False
                 terminal_event: dict[str, Any] | None = None
@@ -446,6 +468,7 @@ class ResponsesWebsocketSession:
             with self._request_condition:
                 if self._active_request_identity == active_request:
                     self._active_request_identity = None
+                    self._active_request_thread_ident = None
 
     def _build_stream_request(
         self,
