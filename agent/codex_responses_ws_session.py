@@ -217,6 +217,7 @@ class ResponsesWebsocketSession:
         self._worker_lock = threading.Lock()
         self._request_condition = threading.Condition()
         self._request_in_flight = False
+        self._active_request_identity: tuple[int, int] | None = None
         self._closed = False
         self._generation = 0
         self._request_ids = count(1)
@@ -263,7 +264,10 @@ class ResponsesWebsocketSession:
             self._command_queue.put(_WorkerCommand(kind="reset", generation=self._generation))
 
     def close(self) -> None:
+        active_request: tuple[int, int] | None = None
         worker: threading.Thread | None = None
+        with self._request_condition:
+            active_request = self._active_request_identity
         with self._worker_lock:
             if self._closed:
                 return
@@ -272,6 +276,18 @@ class ResponsesWebsocketSession:
             self._generation += 1
             self._command_queue.put(_WorkerCommand(kind="close", generation=self._generation))
             worker = self._worker
+        if active_request is not None:
+            self._event_queue.put(
+                _WorkerEvent(
+                    kind="error",
+                    generation=active_request[0],
+                    request_id=active_request[1],
+                    payload=GenericWsStartedError(
+                        "Responses WebSocket stream failed after request start: "
+                        "session closed during active request"
+                    ),
+                )
+            )
         with self._request_condition:
             self._request_condition.notify_all()
         if worker is not None:
@@ -329,94 +345,107 @@ class ResponsesWebsocketSession:
         interrupted: Callable[[], bool] | None,
         register_abort: Callable[[Callable[[str], None]], None] | None,
     ) -> Any:
-
         allow_full_retry = True
         force_full = False
+        active_request: tuple[int, int] | None = None
 
-        while True:
-            generation = self._generation
-            request_body, request_kind = self._build_stream_request(
-                api_kwargs,
-                force_full=force_full,
-            )
-            request_id = next(self._request_ids)
-            cancel_sent = False
-            locally_interrupted = False
-            terminal_event: dict[str, Any] | None = None
-
-            self._ensure_worker()
-            self._command_queue.put(
-                _WorkerCommand(
-                    kind="send",
-                    generation=generation,
-                    request_id=request_id,
-                    api_kwargs=_copy_request_kwargs(api_kwargs),
-                    request_body=request_body,
+        try:
+            while True:
+                generation = self._generation
+                request_body, request_kind = self._build_stream_request(
+                    api_kwargs,
+                    force_full=force_full,
                 )
-            )
+                request_id = next(self._request_ids)
+                active_request = (generation, request_id)
+                with self._request_condition:
+                    self._active_request_identity = active_request
+                cancel_sent = False
+                locally_interrupted = False
+                terminal_event: dict[str, Any] | None = None
 
-            def _request_cancel(_reason: str) -> None:
-                nonlocal cancel_sent
-                if cancel_sent or self._closed:
-                    return
-                cancel_sent = True
+                self._ensure_worker()
                 self._command_queue.put(
                     _WorkerCommand(
-                        kind="cancel",
+                        kind="send",
                         generation=generation,
                         request_id=request_id,
+                        api_kwargs=_copy_request_kwargs(api_kwargs),
+                        request_body=request_body,
                     )
                 )
 
-            if register_abort is not None:
-                register_abort(_request_cancel)
-
-            def _events():
-                nonlocal cancel_sent, locally_interrupted, terminal_event
-                while True:
-                    if interrupted is not None and interrupted() and not cancel_sent:
-                        locally_interrupted = True
-                        _request_cancel("interrupted")
-                    try:
-                        item = self._event_queue.get(timeout=self.recv_poll_timeout)
-                    except queue.Empty:
-                        continue
-                    if item.generation != generation or item.request_id != request_id:
-                        continue
-                    if item.kind == "error":
-                        raise item.payload
-
-                    event = item.payload
-                    terminal = event.get("type") in _TERMINAL_EVENT_TYPES
-                    if terminal:
-                        terminal_event = event
-                    yield _event_namespace(event)
-                    if terminal:
-                        if locally_interrupted and event.get("type") == "response.cancelled":
-                            raise InterruptedError(
-                                "Agent interrupted during Responses WebSocket stream"
-                            )
+                def _request_cancel(_reason: str) -> None:
+                    nonlocal cancel_sent
+                    if cancel_sent or self._closed:
                         return
+                    cancel_sent = True
+                    self._command_queue.put(
+                        _WorkerCommand(
+                            kind="cancel",
+                            generation=generation,
+                            request_id=request_id,
+                        )
+                    )
 
-            try:
-                result = collect_events(_events())
-            except GenericWsRejectedError as exc:
-                if allow_full_retry and _is_previous_response_not_found(exc):
-                    allow_full_retry = False
-                    force_full = True
-                    self.reset("previous_response_not_found")
-                    continue
-                self.reset("post-send rejection")
-                raise
-            except GenericWsStartedError:
-                self.reset("post-send failure")
-                raise
-            except InterruptedError:
-                raise
-            else:
-                if terminal_event is not None and not locally_interrupted:
-                    self.commit_terminal_state(api_kwargs, terminal_event)
-                return result
+                if register_abort is not None:
+                    register_abort(_request_cancel)
+
+                def _events():
+                    nonlocal cancel_sent, locally_interrupted, terminal_event
+                    while True:
+                        if interrupted is not None and interrupted() and not cancel_sent:
+                            locally_interrupted = True
+                            _request_cancel("interrupted")
+                        try:
+                            item = self._event_queue.get(timeout=self.recv_poll_timeout)
+                        except queue.Empty:
+                            if self._closed:
+                                raise GenericWsStartedError(
+                                    "Responses WebSocket stream failed after request start: "
+                                    "session closed during active request"
+                                )
+                            continue
+                        if item.generation != generation or item.request_id != request_id:
+                            continue
+                        if item.kind == "error":
+                            raise item.payload
+
+                        event = item.payload
+                        terminal = event.get("type") in _TERMINAL_EVENT_TYPES
+                        if terminal:
+                            terminal_event = event
+                        yield _event_namespace(event)
+                        if terminal:
+                            if locally_interrupted and event.get("type") == "response.cancelled":
+                                raise InterruptedError(
+                                    "Agent interrupted during Responses WebSocket stream"
+                                )
+                            return
+
+                try:
+                    result = collect_events(_events())
+                except GenericWsRejectedError as exc:
+                    if allow_full_retry and _is_previous_response_not_found(exc):
+                        allow_full_retry = False
+                        force_full = True
+                        self.reset("previous_response_not_found")
+                        continue
+                    self.reset("post-send rejection")
+                    raise
+                except GenericWsStartedError:
+                    self.reset("post-send failure")
+                    raise
+                except InterruptedError:
+                    raise
+                else:
+                    if terminal_event is not None and not locally_interrupted:
+                        self.commit_terminal_state(api_kwargs, terminal_event)
+                    return result
+        finally:
+            with self._request_condition:
+                if self._active_request_identity == active_request:
+                    self._active_request_identity = None
 
     def _build_stream_request(
         self,

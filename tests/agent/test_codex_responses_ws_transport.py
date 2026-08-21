@@ -816,6 +816,57 @@ def test_error_classifier_handles_generic_ws_errors():
     assert rejected.should_fallback is False
 
 
+def test_run_codex_stream_does_not_activate_state_without_owned_session(monkeypatch):
+    import agent.codex_responses_ws_transport as transport
+    from agent.codex_runtime import run_codex_stream
+
+    _stub_httpx(monkeypatch)
+    _stub_openai(monkeypatch)
+    client = SimpleNamespace()
+    agent = SimpleNamespace(
+        provider="custom:sub2api",
+        base_url="https://relay.example.com/v1",
+        api_mode="codex_responses",
+        model="gpt-5",
+        session_id="s-state-configured",
+        responses_transport="websocket",
+        responses_transport_provider="custom:sub2api",
+        responses_ws_url=None,
+        responses_ws_state=True,
+        api_key="test-key",
+        _client_kwargs={"timeout": 5.0, "default_headers": {}},
+        _interrupt_requested=False,
+        _active_request_abort=None,
+        _generic_ws_auto_disabled_for=None,
+        interim_assistant_callback=None,
+        show_commentary=True,
+        _codex_streamed_text_parts=[],
+        _codex_stream_last_event_ts=0,
+        log_prefix="",
+    )
+
+    def _ensure_client(reason=""):
+        return client
+
+    agent._ensure_primary_openai_client = _ensure_client
+    agent._fire_stream_delta = lambda _t: None
+    agent._fire_reasoning_delta = lambda _t: None
+    agent._fire_streamed_codex_commentary = lambda _t: None
+    agent._touch_activity = lambda _s: None
+    agent._client_log_context = lambda: "ctx"
+
+    result = SimpleNamespace(output=[], usage=None, status="completed")
+
+    def fake_ws(**kwargs):
+        assert "responses_ws_state" not in kwargs
+        assert "responses_ws_session" not in kwargs
+        return result
+
+    monkeypatch.setattr(transport, "run_generic_codex_ws_stream", fake_ws)
+
+    assert run_codex_stream(agent, {"model": "gpt-5", "input": "hello"}, client=client) is result
+
+
 def test_run_codex_stream_auto_never_replays_after_started_error(monkeypatch):
     """auto mode must not SSE-fallback after the send boundary."""
     import agent.codex_responses_ws_transport as transport
