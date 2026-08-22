@@ -377,6 +377,7 @@ class ResponsesWebsocketSession:
         register_abort: Callable[[Callable[[str], None]], None] | None,
     ) -> Any:
         allow_full_retry = True
+        allow_pre_send_retry = True
         force_full = False
         active_request: tuple[int, int] | None = None
 
@@ -464,6 +465,11 @@ class ResponsesWebsocketSession:
                         self.reset("previous_response_not_found")
                         continue
                     self.reset("post-send rejection")
+                    raise
+                except GenericWsNotStartedError:
+                    if allow_pre_send_retry:
+                        allow_pre_send_retry = False
+                        continue
                     raise
                 except GenericWsStartedError:
                     self.reset("post-send failure")
@@ -602,8 +608,10 @@ class ResponsesWebsocketSession:
                         payload = json.dumps({"type": "response.create", **dict(command.request_body or {})})
                         active_request_id = request_id
                         active_generation = command.generation
-                        started = True
                         websocket.send(payload)
+                        # Once send returns, the peer may have accepted the
+                        # request. Later failures must never be replayed.
+                        started = True
                         last_event_at = time.monotonic()
                     except GenericWsNotStartedError as exc:
                         self._event_queue.put(

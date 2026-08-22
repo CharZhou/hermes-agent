@@ -119,6 +119,22 @@ class _IdleClosingSocket(_ScriptedSocket):
         return frame
 
 
+class _SendClosingSocket(_ScriptedSocket):
+    """Simulate an idle close discovered while attempting the next send."""
+
+    def __init__(self, scripts: list[_QueuedRequest]) -> None:
+        super().__init__(scripts)
+        self._response_create_count = 0
+
+    def send(self, payload: str) -> None:
+        message = json.loads(payload)
+        if message.get("type") == "response.create":
+            self._response_create_count += 1
+            if self._response_create_count == 2:
+                raise OSError("received 1000 (OK) websocket idle timeout")
+        super().send(payload)
+
+
 def _fake_connect_factory():
     sockets: list[_ScriptedSocket] = []
     calls: list[dict[str, Any]] = []
@@ -396,6 +412,84 @@ def test_idle_peer_close_reconnects_before_next_incremental_request() -> None:
     assert len(first_socket.sent) == 1
     assert second_socket.sent[0]["previous_response_id"] == "resp-1"
     assert second_socket.sent[0]["input"] == [{"id": "b"}]
+
+
+def test_idle_close_during_send_reconnects_and_retries_unstarted_request() -> None:
+    first_socket = _SendClosingSocket(
+        [
+            _QueuedRequest(
+                frames=[
+                    json.dumps({"type": "response.created", "response": {"id": "resp-1"}}),
+                    json.dumps(
+                        {
+                            "type": "response.done",
+                            "response": {"id": "resp-1", "status": "completed"},
+                        }
+                    ),
+                ],
+                cancel_frames=[],
+            )
+        ]
+    )
+    second_socket = _ScriptedSocket(
+        [
+            _QueuedRequest(
+                frames=[
+                    json.dumps({"type": "response.created", "response": {"id": "resp-2"}}),
+                    json.dumps(
+                        {
+                            "type": "response.done",
+                            "response": {"id": "resp-2", "status": "completed"},
+                        }
+                    ),
+                ],
+                cancel_frames=[],
+            )
+        ]
+    )
+    sockets = [first_socket, second_socket]
+    connect_calls = 0
+
+    def connect(*_args: Any, **_kwargs: Any) -> _ScriptedSocket:
+        nonlocal connect_calls
+        socket = sockets[connect_calls]
+        connect_calls += 1
+        return socket
+
+    session = ResponsesWebsocketSession(
+        state_enabled=True,
+        connect=connect,
+        client=object(),
+        api_key="test-key",
+        headers={},
+        provider="custom:relay",
+        base_url="https://relay.example.com/v1",
+        transport="websocket",
+        timeout=0.05,
+        idle_timeout=0.2,
+        recv_poll_timeout=0.01,
+        ping_interval=30.0,
+        ping_timeout=60.0,
+        close_timeout=5.0,
+    )
+
+    session.stream_request(
+        api_kwargs={"model": "gpt-5", "input": [{"id": "a"}]},
+        collect_events=lambda events: [event.type for event in events],
+        interrupted=lambda: False,
+        register_abort=None,
+    )
+
+    assert session.stream_request(
+        api_kwargs={"model": "gpt-5", "input": [{"id": "a"}, {"id": "b"}]},
+        collect_events=lambda events: [event.type for event in events],
+        interrupted=lambda: False,
+        register_abort=None,
+    ) == ["response.created", "response.completed"]
+
+    assert connect_calls == 2
+    assert len(first_socket.sent) == 1
+    assert second_socket.sent[0]["previous_response_id"] == "resp-1"
 
 
 def test_session_does_not_prewarm_connection() -> None:
