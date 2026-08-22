@@ -623,6 +623,8 @@ class ModelSwitchResult:
     responses_transport: str = "sse"
     responses_ws_url: str = ""
     responses_ws_state: bool = False
+    responses_ws_ping_interval_seconds: float = 30.0
+    responses_ws_ping_timeout_seconds: float = 90.0
     responses_transport_provider: str = ""
     request_overrides: Optional[dict] = None
     error_message: str = ""
@@ -1855,6 +1857,8 @@ def switch_model(
     responses_transport = "sse"
     responses_ws_url = ""
     responses_ws_state = False
+    responses_ws_ping_interval_seconds = 30.0
+    responses_ws_ping_timeout_seconds = 90.0
     responses_transport_provider = ""
     request_overrides = None
     ollama_headers: dict[str, str] = {}
@@ -1864,6 +1868,7 @@ def switch_model(
     def _lift_runtime_transport(runtime: dict) -> None:
         nonlocal responses_transport, responses_ws_url
         nonlocal responses_ws_state, responses_transport_provider
+        nonlocal responses_ws_ping_interval_seconds, responses_ws_ping_timeout_seconds
 
         from agent.codex_responses_ws_transport import normalize_responses_transport
 
@@ -1872,6 +1877,12 @@ def switch_model(
         )
         responses_ws_url = str(runtime.get("responses_ws_url") or "").strip()
         responses_ws_state = bool(runtime.get("responses_ws_state", False))
+        responses_ws_ping_interval_seconds = float(
+            runtime.get("responses_ws_ping_interval_seconds", 30.0)
+        )
+        responses_ws_ping_timeout_seconds = float(
+            runtime.get("responses_ws_ping_timeout_seconds", 90.0)
+        )
         responses_transport_provider = str(
             runtime.get("responses_transport_provider") or ""
         ).strip().lower()
@@ -2226,6 +2237,8 @@ def switch_model(
         responses_transport=responses_transport,
         responses_ws_url=responses_ws_url,
         responses_ws_state=responses_ws_state,
+        responses_ws_ping_interval_seconds=responses_ws_ping_interval_seconds,
+        responses_ws_ping_timeout_seconds=responses_ws_ping_timeout_seconds,
         responses_transport_provider=responses_transport_provider,
         request_overrides=dict(request_overrides or {}),
         warning_message=" | ".join(warnings) if warnings else "",

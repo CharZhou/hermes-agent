@@ -1953,6 +1953,12 @@ class GatewaySlashCommandsMixin:
                                     responses_transport=result.responses_transport,
                                     responses_ws_url=result.responses_ws_url,
                                     responses_ws_state=result.responses_ws_state,
+                                    responses_ws_ping_interval_seconds=(
+                                        result.responses_ws_ping_interval_seconds
+                                    ),
+                                    responses_ws_ping_timeout_seconds=(
+                                        result.responses_ws_ping_timeout_seconds
+                                    ),
                                     responses_transport_provider=(
                                         result.responses_transport_provider
                                     ),
@@ -2021,6 +2027,12 @@ class GatewaySlashCommandsMixin:
                             "responses_transport": result.responses_transport,
                             "responses_ws_url": result.responses_ws_url,
                             "responses_ws_state": result.responses_ws_state,
+                            "responses_ws_ping_interval_seconds": (
+                                result.responses_ws_ping_interval_seconds
+                            ),
+                            "responses_ws_ping_timeout_seconds": (
+                                result.responses_ws_ping_timeout_seconds
+                            ),
                             "responses_transport_provider": (
                                 result.responses_transport_provider
                             ),
@@ -2284,6 +2296,12 @@ class GatewaySlashCommandsMixin:
                         responses_transport=result.responses_transport,
                         responses_ws_url=result.responses_ws_url,
                         responses_ws_state=result.responses_ws_state,
+                        responses_ws_ping_interval_seconds=(
+                            result.responses_ws_ping_interval_seconds
+                        ),
+                        responses_ws_ping_timeout_seconds=(
+                            result.responses_ws_ping_timeout_seconds
+                        ),
                         responses_transport_provider=(
                             result.responses_transport_provider
                         ),
@@ -2351,6 +2369,12 @@ class GatewaySlashCommandsMixin:
                 "responses_transport": result.responses_transport,
                 "responses_ws_url": result.responses_ws_url,
                 "responses_ws_state": result.responses_ws_state,
+                "responses_ws_ping_interval_seconds": (
+                    result.responses_ws_ping_interval_seconds
+                ),
+                "responses_ws_ping_timeout_seconds": (
+                    result.responses_ws_ping_timeout_seconds
+                ),
                 "responses_transport_provider": (
                     result.responses_transport_provider
                 ),

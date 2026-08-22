@@ -18,6 +18,7 @@ import copy
 from hermes_cli.cli_output import line_input
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -1395,6 +1396,7 @@ def _normalize_custom_provider_entry(
         "discover_models", "extra_body", "extra_headers",
         "responses_transport", "responses_ws_url",
         "responses_ws_state",
+        "responses_ws_ping_interval_seconds", "responses_ws_ping_timeout_seconds",
         "ssl_ca_cert", "ssl_verify",
     }
     for camel, snake in _CAMEL_ALIASES.items():
@@ -1554,6 +1556,31 @@ def _normalize_custom_provider_entry(
     elif is_truthy_value(responses_ws_state):
         normalized["responses_ws_state"] = True
 
+    for key in (
+        "responses_ws_ping_interval_seconds",
+        "responses_ws_ping_timeout_seconds",
+    ):
+        value = entry.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            duration = 0.0
+        else:
+            try:
+                duration = float(value)
+            except (TypeError, ValueError):
+                duration = 0.0
+        if math.isfinite(duration) and duration > 0:
+            normalized[key] = duration
+        else:
+            _warn_once_per_provider(
+                provider_key,
+                f"invalid:{key}",
+                "providers.%s: %s must be a positive number; using the default",
+                provider_key or "?",
+                key,
+            )
+
     # Per-provider extra HTTP headers (proxies, gateways, custom auth).
     # Values may carry credentials (e.g. CF-Access-Client-Secret) — never
     # log them anywhere downstream.
@@ -1603,6 +1630,8 @@ def _custom_provider_entry_to_provider_config(
         "responses_transport",
         "responses_ws_url",
         "responses_ws_state",
+        "responses_ws_ping_interval_seconds",
+        "responses_ws_ping_timeout_seconds",
         "ssl_ca_cert",
         "ssl_verify",
     ):

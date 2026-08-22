@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from collections.abc import Mapping
 from types import SimpleNamespace
@@ -33,6 +34,8 @@ _TERMINAL_EVENT_TYPES = frozenset(
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 15.0
 DEFAULT_RECV_POLL_SECONDS = 1.0
 DEFAULT_IDLE_TIMEOUT_SECONDS = 180.0
+DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS = 30.0
+DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS = 90.0
 # Pre-send failures may open a fresh WebSocket. Once ``send`` is invoked,
 # retries are prohibited because Responses has no reliable idempotency key.
 DEFAULT_WS_MAX_ATTEMPTS = 3
@@ -95,6 +98,17 @@ def normalize_responses_transport(value: Any) -> str:
     """Return a supported transport name, defaulting unknown values to SSE."""
     transport = str(value or "").strip().lower().replace("_", "-")
     return transport if transport in VALID_TRANSPORTS else "sse"
+
+
+def normalize_responses_ws_keepalive_seconds(value: Any, *, default: float) -> float:
+    """Return a positive keepalive duration or its safe default."""
+    if isinstance(value, bool):
+        return default
+    try:
+        duration = float(value)
+    except (TypeError, ValueError):
+        return default
+    return duration if math.isfinite(duration) and duration > 0 else default
 
 
 def is_generic_codex_ws_eligible(*, provider: Any, base_url: Any, api_mode: Any) -> bool:

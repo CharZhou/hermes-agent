@@ -516,6 +516,8 @@ class AIAgent:
         responses_transport: str = "sse",
         responses_ws_url: str = None,
         responses_ws_state: bool = False,
+        responses_ws_ping_interval_seconds: float = 30.0,
+        responses_ws_ping_timeout_seconds: float = 90.0,
         responses_transport_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
@@ -610,6 +612,8 @@ class AIAgent:
             responses_transport=responses_transport,
             responses_ws_url=responses_ws_url,
             responses_ws_state=responses_ws_state,
+            responses_ws_ping_interval_seconds=responses_ws_ping_interval_seconds,
+            responses_ws_ping_timeout_seconds=responses_ws_ping_timeout_seconds,
             responses_transport_provider=responses_transport_provider,
         )
 
@@ -902,6 +906,8 @@ class AIAgent:
         responses_transport='sse',
         responses_ws_url=None,
         responses_ws_state=False,
+        responses_ws_ping_interval_seconds=30.0,
+        responses_ws_ping_timeout_seconds=90.0,
         responses_transport_provider=None,
         request_overrides=None,
     ):
@@ -917,6 +923,8 @@ class AIAgent:
             responses_transport,
             responses_ws_url,
             responses_ws_state,
+            responses_ws_ping_interval_seconds,
+            responses_ws_ping_timeout_seconds,
             responses_transport_provider,
             request_overrides,
         )

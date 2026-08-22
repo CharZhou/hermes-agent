@@ -592,6 +592,8 @@ def init_agent(
     responses_transport: str = "sse",
     responses_ws_url: str = None,
     responses_ws_state: bool = False,
+    responses_ws_ping_interval_seconds: float = 30.0,
+    responses_ws_ping_timeout_seconds: float = 90.0,
     responses_transport_provider: str = None,
 ):
     """
@@ -692,7 +694,12 @@ def init_agent(
         if isinstance(requested_provider, str) and requested_provider.strip()
         else agent.provider
     )
-    from agent.codex_responses_ws_transport import normalize_responses_transport
+    from agent.codex_responses_ws_transport import (
+        DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS,
+        DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS,
+        normalize_responses_transport,
+        normalize_responses_ws_keepalive_seconds,
+    )
 
     agent.responses_transport = normalize_responses_transport(responses_transport)
     agent.responses_ws_url = (
@@ -701,6 +708,14 @@ def init_agent(
         else None
     )
     agent.responses_ws_state = bool(responses_ws_state)
+    agent.responses_ws_ping_interval_seconds = normalize_responses_ws_keepalive_seconds(
+        responses_ws_ping_interval_seconds,
+        default=DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS,
+    )
+    agent.responses_ws_ping_timeout_seconds = normalize_responses_ws_keepalive_seconds(
+        responses_ws_ping_timeout_seconds,
+        default=DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS,
+    )
     agent.responses_transport_provider = (
         responses_transport_provider.strip().lower()
         if isinstance(responses_transport_provider, str)
@@ -3067,6 +3082,8 @@ def init_agent(
         "responses_transport": agent.responses_transport,
         "responses_ws_url": agent.responses_ws_url,
         "responses_ws_state": bool(agent.responses_ws_state),
+        "responses_ws_ping_interval_seconds": agent.responses_ws_ping_interval_seconds,
+        "responses_ws_ping_timeout_seconds": agent.responses_ws_ping_timeout_seconds,
         "responses_transport_provider": agent.responses_transport_provider,
         "request_overrides": dict(agent.request_overrides or {}),
         "client_kwargs": dict(agent._client_kwargs),

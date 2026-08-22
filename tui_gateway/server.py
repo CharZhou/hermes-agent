@@ -4164,6 +4164,12 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     ).strip()
     responses_ws_url = str(model_config.get("responses_ws_url") or "").strip()
     responses_ws_state = bool(model_config.get("responses_ws_state", False))
+    responses_ws_ping_interval_seconds = model_config.get(
+        "responses_ws_ping_interval_seconds", 30.0
+    )
+    responses_ws_ping_timeout_seconds = model_config.get(
+        "responses_ws_ping_timeout_seconds", 90.0
+    )
     responses_transport_provider = str(
         model_config.get("responses_transport_provider") or ""
     ).strip()
@@ -4209,6 +4215,8 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             "responses_transport": responses_transport or None,
             "responses_ws_url": responses_ws_url or None,
             "responses_ws_state": responses_ws_state,
+            "responses_ws_ping_interval_seconds": responses_ws_ping_interval_seconds,
+            "responses_ws_ping_timeout_seconds": responses_ws_ping_timeout_seconds,
             "responses_transport_provider": responses_transport_provider or None,
         }
     if provider:
@@ -4236,6 +4244,12 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     ).strip()
     responses_ws_url = str(getattr(agent, "responses_ws_url", "") or "").strip()
     responses_ws_state = bool(getattr(agent, "responses_ws_state", False))
+    responses_ws_ping_interval_seconds = getattr(
+        agent, "responses_ws_ping_interval_seconds", 30.0
+    )
+    responses_ws_ping_timeout_seconds = getattr(
+        agent, "responses_ws_ping_timeout_seconds", 90.0
+    )
     responses_transport_provider = str(
         getattr(agent, "responses_transport_provider", "") or ""
     ).strip()
@@ -4291,6 +4305,8 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     else:
         config.pop("responses_ws_url", None)
     config["responses_ws_state"] = responses_ws_state
+    config["responses_ws_ping_interval_seconds"] = responses_ws_ping_interval_seconds
+    config["responses_ws_ping_timeout_seconds"] = responses_ws_ping_timeout_seconds
     if responses_transport_provider:
         config["responses_transport_provider"] = responses_transport_provider
     else:
@@ -4902,6 +4918,12 @@ def _snapshot_agent_model_runtime(agent) -> dict:
         "responses_transport": getattr(agent, "responses_transport", "sse"),
         "responses_ws_url": getattr(agent, "responses_ws_url", None),
         "responses_ws_state": getattr(agent, "responses_ws_state", False),
+        "responses_ws_ping_interval_seconds": getattr(
+            agent, "responses_ws_ping_interval_seconds", 30.0
+        ),
+        "responses_ws_ping_timeout_seconds": getattr(
+            agent, "responses_ws_ping_timeout_seconds", 90.0
+        ),
         "responses_transport_provider": getattr(
             agent, "responses_transport_provider", None
         ),
@@ -4934,6 +4956,12 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             responses_transport=snapshot.get("responses_transport", "sse"),
             responses_ws_url=snapshot.get("responses_ws_url"),
             responses_ws_state=snapshot.get("responses_ws_state", False),
+            responses_ws_ping_interval_seconds=snapshot.get(
+                "responses_ws_ping_interval_seconds", 30.0
+            ),
+            responses_ws_ping_timeout_seconds=snapshot.get(
+                "responses_ws_ping_timeout_seconds", 90.0
+            ),
             responses_transport_provider=snapshot.get(
                 "responses_transport_provider"
             ),
@@ -5101,6 +5129,12 @@ def _apply_model_switch(
                 responses_transport=getattr(result, "responses_transport", "sse"),
                 responses_ws_url=getattr(result, "responses_ws_url", None),
                 responses_ws_state=getattr(result, "responses_ws_state", False),
+                responses_ws_ping_interval_seconds=getattr(
+                    result, "responses_ws_ping_interval_seconds", 30.0
+                ),
+                responses_ws_ping_timeout_seconds=getattr(
+                    result, "responses_ws_ping_timeout_seconds", 90.0
+                ),
                 responses_transport_provider=(
                     getattr(result, "responses_transport_provider", None)
                 ),
@@ -5154,6 +5188,12 @@ def _apply_model_switch(
             "responses_transport": getattr(result, "responses_transport", "sse"),
             "responses_ws_url": getattr(result, "responses_ws_url", None),
             "responses_ws_state": getattr(result, "responses_ws_state", False),
+            "responses_ws_ping_interval_seconds": getattr(
+                result, "responses_ws_ping_interval_seconds", 30.0
+            ),
+            "responses_ws_ping_timeout_seconds": getattr(
+                result, "responses_ws_ping_timeout_seconds", 90.0
+            ),
             "responses_transport_provider": (
                 getattr(result, "responses_transport_provider", None)
             ),
@@ -6740,6 +6780,12 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "responses_transport": getattr(agent, "responses_transport", "sse"),
         "responses_ws_url": getattr(agent, "responses_ws_url", None),
         "responses_ws_state": getattr(agent, "responses_ws_state", False),
+        "responses_ws_ping_interval_seconds": getattr(
+            agent, "responses_ws_ping_interval_seconds", 30.0
+        ),
+        "responses_ws_ping_timeout_seconds": getattr(
+            agent, "responses_ws_ping_timeout_seconds", 90.0
+        ),
         "responses_transport_provider": getattr(
             agent, "responses_transport_provider", None
         ),
@@ -7168,6 +7214,18 @@ def _make_agent(
         override_responses_ws_url = model_override.get("responses_ws_url")
         override_has_responses_ws_state = "responses_ws_state" in model_override
         override_responses_ws_state = model_override.get("responses_ws_state", False)
+        override_has_responses_ws_ping_interval_seconds = (
+            "responses_ws_ping_interval_seconds" in model_override
+        )
+        override_responses_ws_ping_interval_seconds = model_override.get(
+            "responses_ws_ping_interval_seconds", 30.0
+        )
+        override_has_responses_ws_ping_timeout_seconds = (
+            "responses_ws_ping_timeout_seconds" in model_override
+        )
+        override_responses_ws_ping_timeout_seconds = model_override.get(
+            "responses_ws_ping_timeout_seconds", 90.0
+        )
         override_responses_transport_provider = model_override.get(
             "responses_transport_provider"
         )
@@ -7220,6 +7278,14 @@ def _make_agent(
                 runtime["responses_ws_url"] = override_responses_ws_url
             if override_has_responses_ws_state:
                 runtime["responses_ws_state"] = bool(override_responses_ws_state)
+            if override_has_responses_ws_ping_interval_seconds:
+                runtime["responses_ws_ping_interval_seconds"] = (
+                    override_responses_ws_ping_interval_seconds
+                )
+            if override_has_responses_ws_ping_timeout_seconds:
+                runtime["responses_ws_ping_timeout_seconds"] = (
+                    override_responses_ws_ping_timeout_seconds
+                )
             if override_responses_transport_provider:
                 runtime["responses_transport_provider"] = (
                     override_responses_transport_provider
@@ -7252,6 +7318,12 @@ def _make_agent(
         responses_transport=runtime.get("responses_transport", "sse"),
         responses_ws_url=runtime.get("responses_ws_url"),
         responses_ws_state=runtime.get("responses_ws_state", False),
+        responses_ws_ping_interval_seconds=runtime.get(
+            "responses_ws_ping_interval_seconds", 30.0
+        ),
+        responses_ws_ping_timeout_seconds=runtime.get(
+            "responses_ws_ping_timeout_seconds", 90.0
+        ),
         responses_transport_provider=runtime.get("responses_transport_provider"),
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),

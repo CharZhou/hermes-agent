@@ -36,6 +36,8 @@ OVERRIDE = {
     "responses_transport": "auto",
     "responses_ws_url": "wss://api.openai.example/ws/responses",
     "responses_ws_state": True,
+    "responses_ws_ping_interval_seconds": 45.0,
+    "responses_ws_ping_timeout_seconds": 150.0,
     "responses_transport_provider": "custom:relay",
     "request_overrides": {
         "extra_body": {"text": {"verbosity": "low"}},
@@ -93,6 +95,8 @@ def test_override_persists_and_survives_restart(store_factory, tmp_path):
         "responses_transport": "auto",
         "responses_ws_url": "wss://api.openai.example/ws/responses",
         "responses_ws_state": True,
+        "responses_ws_ping_interval_seconds": 45.0,
+        "responses_ws_ping_timeout_seconds": 150.0,
         "responses_transport_provider": "custom:relay",
     }
 
@@ -160,5 +164,7 @@ def test_sanitize_model_override():
         "responses_transport": "auto",
         "responses_ws_url": "wss://api.openai.example/ws/responses",
         "responses_ws_state": True,
+        "responses_ws_ping_interval_seconds": 45.0,
+        "responses_ws_ping_timeout_seconds": 150.0,
         "responses_transport_provider": "custom:relay",
     }

@@ -760,6 +760,8 @@ PERSISTABLE_MODEL_OVERRIDE_KEYS = (
     "responses_transport",
     "responses_ws_url",
     "responses_ws_state",
+    "responses_ws_ping_interval_seconds",
+    "responses_ws_ping_timeout_seconds",
     "responses_transport_provider",
 )
 
@@ -780,6 +782,13 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
         if key == "responses_ws_state":
             if isinstance(value, bool):
                 cleaned[key] = value
+            continue
+        if key in {
+            "responses_ws_ping_interval_seconds",
+            "responses_ws_ping_timeout_seconds",
+        }:
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                cleaned[key] = float(value)
             continue
         cleaned[key] = str(value)
     return cleaned or None

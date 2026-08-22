@@ -2878,6 +2878,12 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "responses_transport": runtime.get("responses_transport", "sse"),
         "responses_ws_url": runtime.get("responses_ws_url"),
         "responses_ws_state": runtime.get("responses_ws_state", False),
+        "responses_ws_ping_interval_seconds": runtime.get(
+            "responses_ws_ping_interval_seconds", 30.0
+        ),
+        "responses_ws_ping_timeout_seconds": runtime.get(
+            "responses_ws_ping_timeout_seconds", 90.0
+        ),
         "responses_transport_provider": runtime.get("responses_transport_provider"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
@@ -3032,6 +3038,12 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "responses_transport": runtime.get("responses_transport", "sse"),
         "responses_ws_url": runtime.get("responses_ws_url"),
         "responses_ws_state": runtime.get("responses_ws_state", False),
+        "responses_ws_ping_interval_seconds": runtime.get(
+            "responses_ws_ping_interval_seconds", 30.0
+        ),
+        "responses_ws_ping_timeout_seconds": runtime.get(
+            "responses_ws_ping_timeout_seconds", 90.0
+        ),
         "responses_transport_provider": runtime.get("responses_transport_provider"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
@@ -3095,6 +3107,12 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "responses_transport": runtime.get("responses_transport", "sse"),
                     "responses_ws_url": runtime.get("responses_ws_url"),
                     "responses_ws_state": runtime.get("responses_ws_state", False),
+                    "responses_ws_ping_interval_seconds": runtime.get(
+                        "responses_ws_ping_interval_seconds", 30.0
+                    ),
+                    "responses_ws_ping_timeout_seconds": runtime.get(
+                        "responses_ws_ping_timeout_seconds", 90.0
+                    ),
                     "responses_transport_provider": runtime.get("responses_transport_provider"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
@@ -8090,6 +8108,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "responses_transport": override.get("responses_transport", "sse"),
                 "responses_ws_url": override.get("responses_ws_url"),
                 "responses_ws_state": override.get("responses_ws_state", False),
+                "responses_ws_ping_interval_seconds": override.get(
+                    "responses_ws_ping_interval_seconds", 30.0
+                ),
+                "responses_ws_ping_timeout_seconds": override.get(
+                    "responses_ws_ping_timeout_seconds", 90.0
+                ),
                 "responses_transport_provider": override.get("responses_transport_provider"),
                 "max_tokens": override.get("max_tokens"),
                 "credential_pool": override.get("credential_pool"),
@@ -8243,6 +8267,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "responses_transport": runtime_kwargs.get("responses_transport", "sse"),
             "responses_ws_url": runtime_kwargs.get("responses_ws_url"),
             "responses_ws_state": runtime_kwargs.get("responses_ws_state", False),
+            "responses_ws_ping_interval_seconds": runtime_kwargs.get(
+                "responses_ws_ping_interval_seconds", 30.0
+            ),
+            "responses_ws_ping_timeout_seconds": runtime_kwargs.get(
+                "responses_ws_ping_timeout_seconds", 90.0
+            ),
             "responses_transport_provider": runtime_kwargs.get("responses_transport_provider"),
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
@@ -8264,6 +8294,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime["responses_transport"],
                 runtime["responses_ws_url"],
                 runtime["responses_ws_state"],
+                runtime["responses_ws_ping_interval_seconds"],
+                runtime["responses_ws_ping_timeout_seconds"],
                 runtime["responses_transport_provider"],
                 runtime["command"],
                 tuple(runtime["args"]),
@@ -26294,6 +26326,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime.get("responses_transport", "sse"),
                 runtime.get("responses_ws_url", ""),
                 runtime.get("responses_ws_state", False),
+                runtime.get("responses_ws_ping_interval_seconds", 30.0),
+                runtime.get("responses_ws_ping_timeout_seconds", 90.0),
                 runtime.get("responses_transport_provider", ""),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
@@ -26351,6 +26385,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "responses_transport": persisted.get("responses_transport"),
             "responses_ws_url": persisted.get("responses_ws_url"),
             "responses_ws_state": persisted.get("responses_ws_state"),
+            "responses_ws_ping_interval_seconds": persisted.get(
+                "responses_ws_ping_interval_seconds"
+            ),
+            "responses_ws_ping_timeout_seconds": persisted.get(
+                "responses_ws_ping_timeout_seconds"
+            ),
             "responses_transport_provider": persisted.get(
                 "responses_transport_provider"
             ),
@@ -26370,6 +26410,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "responses_transport",
                     "responses_ws_url",
                     "responses_ws_state",
+                    "responses_ws_ping_interval_seconds",
+                    "responses_ws_ping_timeout_seconds",
                     "responses_transport_provider",
                 ):
                     if key not in override and runtime.get(key) is not None:
@@ -26417,6 +26459,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "responses_transport",
             "responses_ws_url",
             "responses_ws_state",
+            "responses_ws_ping_interval_seconds",
+            "responses_ws_ping_timeout_seconds",
             "responses_transport_provider",
             "credential_pool",
         ):
