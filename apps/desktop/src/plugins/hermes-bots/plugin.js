@@ -4016,171 +4016,6 @@ function resolveRosterMentions(text, roster, active = {}) {
   return mentioned
 }
 
-const REMOTE_DM_TIMEOUT_MS = 180000
-const REMOTE_DM_POLL_MS = 2000
-
-/** The remote bot's canonical Bot Chat: pinned stored-id from its profile's
- *  ui_meta first, then resume-by-title, then create. Mirrors
- *  ensureGroupChatSession so DMs land in the ONE forever-chat instead of
- *  minting a fresh "Bot Chat" per mention. */
-async function ensureRemoteCanonicalChat(route, profile) {
-  let pinned = null
-
-  try {
-    const listed = await host.requestProfile(route, 'profiles.list', {})
-    const owner = listed?.profiles?.find(p => p.name === profile)
-    pinned = owner?.ui_meta?.['hermes-bots']?.chat || null
-  } catch {
-    /* older remote gateway — title lookup below still works */
-  }
-
-  for (const target of [pinned, 'Bot Chat']) {
-    if (!target) {
-      continue
-    }
-
-    try {
-      const res = await host.requestProfile(route, 'session.resume', {
-        session_id: target,
-        profile,
-        omit_messages: true
-      })
-
-      if (res?.session_id) {
-        return { runtime: res.session_id, stored: res.session_key || pinned }
-      }
-    } catch {
-      /* fall through */
-    }
-  }
-
-  const created = await host.requestProfile(route, 'session.create', {
-    profile,
-    title: 'Bot Chat',
-    // Bot Mode sessions are always hidden from the global sidebar.
-    hidden: true
-  })
-
-  return { runtime: created?.session_id || null, stored: created?.stored_session_id || null }
-}
-
-/** Bounded reply poll on the recipient's session — same shape as a group
- *  member turn: wait for a NEW assistant message after `before`, or time out. */
-async function pollRemoteDmReply(route, profile, sessionRef, before) {
-  const deadline = Date.now() + REMOTE_DM_TIMEOUT_MS
-
-  while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, REMOTE_DM_POLL_MS))
-
-    let state = null
-
-    try {
-      state = await host.requestProfile(route, 'session.resume', { session_id: sessionRef, profile })
-    } catch {
-      continue
-    }
-
-    const messages = Array.isArray(state?.messages) ? state.messages : []
-    const done = !state?.inflight && !state?.running
-
-    if (messages.length > before && done) {
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i]
-
-        if (msg?.role === 'assistant') {
-          const text = typeof msg.content === 'string'
-            ? msg.content
-            : Array.isArray(msg.content)
-              ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
-              : msg?.text || ''
-
-          return String(text).trim() || null
-        }
-      }
-
-      return null
-    }
-  }
-
-  return null
-}
-
-/** Deliver a user mention to bots on OTHER connections: into each bot's
- *  canonical Bot Chat, with the standard sender-attribution prefix (so the
- *  recipient's messaging protocol recognizes an agent-to-agent message), then
- *  relay the reply back as a notification. Sequential and fire-and-forget
- *  from the composer's perspective. */
-async function deliverRemoteRosterMentions(bots, userText, sender) {
-  const text = String(userText || '').trim()
-
-  if (!text || typeof host.requestProfile !== 'function') {
-    return
-  }
-
-  const senderName = String(sender?.name || 'the user').trim()
-  const senderHandle = String(sender?.handle || senderName).trim()
-
-  for (const bot of bots) {
-    const connectionId = String(bot?.connectionId || '').trim()
-    const profile = String(bot?.name || '').trim() || 'default'
-
-    if (!connectionId || connectionId === 'local') {
-      continue
-    }
-
-    const route = { connectionId, mode: 'remote', profile, targetProfile: profile }
-    const label = bot.connectionLabel || connectionId
-
-    try {
-      const { runtime, stored } = await ensureRemoteCanonicalChat(route, profile)
-
-      if (!runtime) {
-        throw new Error('No remote session')
-      }
-
-      // Baseline before our submit, so the poll can spot the NEW reply.
-      let before = 0
-
-      try {
-        const pre = await host.requestProfile(route, 'session.resume', { session_id: stored || runtime, profile })
-        before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
-      } catch {
-        /* lazy session — zero messages */
-      }
-
-      // The delivery prefix is the recipient's cue that an agent (not its
-      // human) is talking — same contract as the local CLI handoff.
-      await host.requestProfile(route, 'prompt.submit', {
-        session_id: runtime,
-        text: `Message from \u{1F916} ${senderName} (@${senderHandle}): ${text}`
-      })
-      host.notify?.({
-        kind: 'info',
-        title: displayName(bot),
-        message: `Messaged @${botHandle(profile, bot)} on ${label} — will relay the reply here.`
-      })
-
-      const reply = await pollRemoteDmReply(route, profile, stored || runtime, before)
-
-      if (reply) {
-        host.notify?.({
-          kind: 'info',
-          title: `\u{1F916} ${displayName(bot)} (${label})`,
-          message: reply.slice(0, 500)
-        })
-      } else {
-        host.notify?.({
-          kind: 'info',
-          title: displayName(bot),
-          message: `No reply from @${botHandle(profile, bot)} yet — check its Bot Chat on ${label}.`
-        })
-      }
-    } catch (error) {
-      host.notifyError?.(error, `Could not reach ${label}`)
-    }
-  }
-}
-
 /** Source-qualified identity for a roster row — the React list key AND the
  *  cross-surface roster identity. Names alone are NOT unique in a
  *  multi-source roster (two connections can both expose 'default');
@@ -4286,7 +4121,16 @@ async function openStoredBotChat(name, storedId, summary) {
     intent: 'main',
     awaitHydration: true,
     expectHistory,
-    keepAllProfilesScope: true,
+    // Move the WORKSPACE onto this bot, not just the transcript.
+    //
+    // With the default (true) the bot's chat opened against its own backend
+    // while `$activeGatewayProfile` stayed on whatever profile was active
+    // before — so "New session" from inside any bot was created on that other
+    // backend. Measured: four consecutive new chats started from different
+    // bots all landed in the `ops` profile's state.db. Clicking a bot is a
+    // workspace switch in this product (one bot = one workspace), so the
+    // chrome has to follow.
+    keepAllProfilesScope: false,
     retryHydrationTimeoutOnce: true
   })
 
@@ -4374,7 +4218,7 @@ function createCanonicalChat(name) {
 
     if (sid && typeof host.openSession === 'function') {
       try {
-        await host.openSession(sid, { profile: name, intent: 'main', keepAllProfilesScope: true })
+        await host.openSession(sid, { profile: name, intent: 'main', keepAllProfilesScope: false })
         opened = true
       } catch {
         // The stored row may not exist until the kickoff persists it. Retry
@@ -4389,7 +4233,7 @@ function createCanonicalChat(name) {
         await host.request('prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
 
         if (!opened && sid && typeof host.openSession === 'function') {
-          await host.openSession(sid, { profile: name, intent: 'main', keepAllProfilesScope: true })
+          await host.openSession(sid, { profile: name, intent: 'main', keepAllProfilesScope: false })
         }
       } catch {
         // The chat already exists. Keep the pin so the next click
@@ -4423,6 +4267,44 @@ function isCanonicalBotChatHistory(history) {
   const rootTitle = String(history?.root_title || '').trim()
   const title = String(history?.title || '').trim()
   return rootTitle === 'Bot Chat' || (!rootTitle && title === 'Bot Chat')
+}
+
+/** The bot's newest VISIBLE conversation when it should win over the pin, else
+ *  null.
+ *
+ *  RETAINED FOR THE DEAD-PIN RECOVERY PATH ONLY. This is deliberately NOT
+ *  consulted while the pin is alive: Bot Mode's documented contract is "click
+ *  a Bot to land in its chat — every Bot has a canonical, persistent Bot Chat
+ *  conversation that is created (and pinned) the moment the Bot is born", and
+ *  canonical Bot Chats are ALWAYS hidden from the Sessions sidebar
+ *  (session.create passes hidden:true unconditionally — see
+ *  hide-bot-chats.test.mjs). The bot row is therefore the ONLY door to the
+ *  forever-chat; preferring a newer session here walls the relationship off
+ *  behind a door that no longer leads to it.
+ *
+ *  Guards, all of which matter:
+ *   - the canonical Bot Chat itself is never "newer" (it IS the pin), so
+ *     plumbing can't shadow itself;
+ *   - an empty draft is skipped: clicking a bot right after a stray ⌘N would
+ *     otherwise open a blank chat instead of the conversation;
+ *   - identical ids mean the pin already points there — nothing to switch to.
+ *  Returns the stored id so callers keep using the normal open path. */
+function newerVisibleBotChat(pinned, history) {
+  const id = history?.id
+
+  if (!id || id === pinned || isCanonicalBotChatHistory(history)) {
+    return null
+  }
+
+  // `message_count` is absent on older gateways — treat unknown as real
+  // history rather than discarding a legitimate conversation.
+  const count = history?.message_count
+
+  if (typeof count === 'number' && count <= 0) {
+    return null
+  }
+
+  return id
 }
 
 async function openBotCanonicalChat(name, pinned, history) {
@@ -4467,6 +4349,29 @@ async function openBotCanonicalChat(name, pinned, history) {
   }
 
   if (preferred && isCanonicalBotChatHistory(preferred)) {
+    // The pin is alive and healthy — open it. This is the whole contract:
+    // "Click a Bot to land in its chat — every Bot has a canonical,
+    // persistent Bot Chat conversation that is created (and pinned) the
+    // moment the Bot is born."
+    //
+    // A newer-visible-session preference used to sit here, so that a bot row
+    // landed on the user's most recent conversation instead of the pin. It
+    // was reverted (2026-08-22) because it is unsound given how Bot Mode
+    // stores these chats: canonical Bot Chats are ALWAYS hidden from the
+    // Sessions sidebar (session.create passes hidden:true unconditionally,
+    // and hideOwnedBotSessions sweeps any that were born visible). The bot
+    // row is therefore the ONLY door to the forever-chat, so preferring a
+    // newer session did not merely re-order two equal entry points — it made
+    // the pinned relationship unreachable from anywhere in the UI. Reported
+    // symptom: a bot's whole build history became invisible, while the row
+    // previewed one session and opened another.
+    //
+    // The bug that motivated the preference — "I start a new chat with a bot,
+    // click another bot, click back, and my new chat is gone" — has a
+    // non-destructive answer: scratch sessions started via "New chat with
+    // this agent" are NOT plumbing-titled, so the hide sweep leaves them in
+    // the Sessions sidebar. They are reachable there; they simply are not the
+    // bot row's target, which is by design.
     try {
       await openStoredBotChat(name, preferred.resolved_id || preferred.id, preferred)
       return pinned
@@ -6359,6 +6264,12 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
     }
 
     try {
+      // `previewSession` prefers the PIN, and so does the click — preview
+      // identity and click identity are the same session by construction
+      // (#88200). The roster's freshest visible session is deliberately NOT
+      // passed: the row's job is to land in the bot's forever-chat, which is
+      // the only door to it (canonical Bot Chats are always hidden from the
+      // Sessions sidebar).
       const id = await openBotCanonicalChat(bot.name, pinnedChat, previewSession)
 
       if (generation === botOpenGeneration && id) {
@@ -8564,13 +8475,6 @@ function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\"'\"'")}'`
 }
 
-/** Escape for interpolation INSIDE an existing double-quoted shell string:
- *  keeps ", `, $, and \ literal so free-text titles (which sync from ui_meta)
- *  and gateway profile names can't expand or break out of the quotes. */
-function shellDoubleQuote(value) {
-  return String(value).replace(/[\\"`$]/g, ch => '\\' + ch)
-}
-
 function routineInputError(title, instruction) {
   if (String(title).includes('\0')) {
     return 'Cronjob name cannot contain NUL (U+0000).'
@@ -8935,6 +8839,11 @@ function CreateRoutineDialog({ bot, open, onClose }) {
   const [instruction, setInstruction] = useState('')
   const [sched, setSched] = useState(defaultScheduleState())
   const [continuity, setContinuity] = useState(false)
+  // Where the run's output lands: 'history' = the run session only (Run
+  // history / cron page, today's behavior); 'bot-chat' = inject into this
+  // bot's canonical Bot Chat as a real message — the bot reads it, acts on
+  // it, and responds there (costs the bot one agent turn per run).
+  const [target, setTarget] = useState('history')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const activeProfile = useValue(host.state.profile)
@@ -8945,6 +8854,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
     setInstruction('')
     setSched(defaultScheduleState())
     setContinuity(false)
+    setTarget('history')
     setBusy(false)
     setError(null)
   }
@@ -8978,7 +8888,11 @@ function CreateRoutineDialog({ bot, open, onClose }) {
         prompt: routinePrompt(bot, title, task, activeProfile),
         ...(bot ? { profile: bot } : {}),
         ...(repeatN ? { repeat: repeatN } : {}),
-        ...(continuity ? { continuity: true } : {})
+        ...(continuity ? { continuity: true } : {}),
+        // 'bot-chat' (bare, no name): the job is created IN the bot's own
+        // cron store (profile scoping above), so the scheduler resolves the
+        // token to that profile — no cross-gateway name ambiguity possible.
+        ...(target === 'bot-chat' ? { deliver: 'bot-chat' } : {})
       })
       await invalidateRoutineOwner(bot)
       host.notify({ kind: 'success', message: `Cronjob "${title}" scheduled` })
@@ -9031,6 +8945,13 @@ function CreateRoutineDialog({ bot, open, onClose }) {
               })
             ),
             labeled('When to run', jsx(SchedulePicker, { state: sched, setState: setSched })),
+            labeled(
+              'Send results to',
+              pickerSelect(target, setTarget, [
+                { id: 'history', label: 'Run history only' },
+                { id: 'bot-chat', label: `${displayName({ name: bot }, $botMeta.get()[bot])}\u2019s chat (bot responds)` }
+              ])
+            ),
             jsxs('label', {
               className: 'flex items-center gap-2 text-xs text-(--ui-text-tertiary) cursor-pointer select-none',
               children: [
@@ -11840,7 +11761,7 @@ export default {
       // sessions pane collapses alone without this flag. The zone then keeps
       // a stranded BOTS tab on screen. The narrow edge overlay mirrors the
       // zone's tab strip, so the pane stays reachable while collapsed.
-      data: { placement: 'left', width: '260px', collapsible: true, showCloseButton: false, hideOnly: true, dock: { pane: 'sessions', pos: 'center', enforce: true } },
+      data: { placement: 'left', width: '260px', collapsible: true, hideOnly: true, dock: { pane: 'sessions', pos: 'center', enforce: true } },
       render: () => jsx(BotsPane, {})
     })
 
@@ -11909,10 +11830,13 @@ export default {
       }
     })
 
-    // @-mention middleware: "@<bot> do the thing" in any chat becomes an
-    // explicit handoff instruction the active agent's SOUL.md knows how to
-    // execute. Names are validated against the LIVE roster so
-    // "user@example.com" or an unknown @ passes through untouched.
+    // @-mention middleware: "@<bot> do the thing" in any chat gets an
+    // IDENTIFICATION note — who the user is referring to, resolved against
+    // the LIVE roster ("user@example.com" or an unknown @ passes through
+    // untouched). The middleware never delivers anything itself: the agent
+    // owns messaging via its message_agent tool (Bot Chats), so there is
+    // exactly one send path and user text is never forwarded verbatim by
+    // the renderer. The composer's @-autocomplete remains the picking aid.
     ctx.register({
       id: 'mention-middleware',
       area: COMPOSER_AREAS.middleware,
@@ -11974,35 +11898,22 @@ export default {
             return draft
           }
 
-          const localMentions = mentionedBots.filter(bot => !bot.remoteSource)
-          const remoteMentions = mentionedBots.filter(bot => bot.remoteSource)
-
-          const activeMeta = $botMeta.get()[live.name]
-          const senderName = displayName({ name: live.name, title: activeMeta?.title }, activeMeta)
-
-          if (remoteMentions.length && typeof host.requestProfile === 'function') {
-            void deliverRemoteRosterMentions(remoteMentions, text, {
-              name: senderName,
-              handle: botHandle(live.name)
-            })
-          }
-          let note = ''
-
-          if (localMentions.length) {
-            note +=
-              '\n\n[@mention handoff — for each mentioned agent (' + localMentions.map(bot => botHandle(bot.name, bot)).join(', ') + '): ' +
-              'COMPOSE a message from you (' + senderName + ') to that agent conveying what the user wants — do not forward this text verbatim (avoid double quotes in your composed message). Send it with exactly one terminal call, run with background=true AND notify_on_complete=true (the recipient may take minutes; the user must not be blocked):\n' +
-              localMentions.map(bot => '`hermes -p ' + shellQuote(bot.name) + ' chat --in ~ -c "Bot Chat" --create-if-missing -Q -q "Message from 🤖 ' + shellDoubleQuote(senderName) + ' (@' + shellDoubleQuote(botHandle(live.name)) + '): <your composed message>"`').join('\n') +
-              '\nAfter dispatching, tell the user the message was sent and END YOUR TURN — do not wait or poll; when the background process completes, its notification carries the reply — relay it then, attributed to that agent. ' +
-              'Relay the reply back to the user, attributed to that agent.]'
-          }
-
-          if (remoteMentions.length) {
-            const labels = remoteMentions.map(bot => `@${botHandle(bot.name, bot)} (${bot.connectionLabel || bot.connectionId})`).join(', ')
-            note +=
-              '\n\n[@mention — stay on this device. Desktop is delivering to ' + labels +
-              ' over Connections in the background. Do not run hermes -p for them and do not switch Gateway. Tell the user they were messaged here; when a reply lands, relay it attributed to that agent.]'
-          }
+          // Identification only. Each line names the agent the user's tag
+          // resolves to (friendly title + device for cross-connection rows),
+          // so the agent knows exactly who "@research-buddy" is without the
+          // renderer ever acting on the user's behalf.
+          const lines = mentionedBots.map(bot => {
+            const handle = botHandle(bot.name, bot)
+            const title = String(botRosterMeta(bot, $botMeta.get())?.title || bot.ui_meta?.['hermes-bots']?.title || bot.title || '').trim()
+            const where = bot.remoteSource
+              ? ` — on ${bot.connectionLabel || bot.connectionId}`
+              : ''
+            return `@${handle} = agent profile "${bot.name}"${title ? ` ("${title}")` : ''}${where}`
+          })
+          const note =
+            '\n\n[@mentions resolved from the Bot Mode roster — the user is referring to: ' +
+            lines.join('; ') +
+            '. If they want one of these agents contacted, compose your own message and send it with your message_agent tool; never forward the user\u2019s text verbatim. If this session has no message_agent tool, agent messaging is unavailable here — say so.]'
 
           return { ...draft, text: text + note }
         }      }
