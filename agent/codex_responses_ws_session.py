@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
 import time
@@ -25,6 +26,9 @@ from agent.codex_responses_ws_transport import (
     build_ws_wire_body,
     resolve_responses_ws_url,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _copy_value(value: Any) -> Any:
@@ -516,6 +520,7 @@ class ResponsesWebsocketSession:
         active_request_id: int | None = None
         active_generation = 0
         last_event_at = 0.0
+        pending_frame: Any | None = None
         idle_limit = float(self.idle_timeout or 0.0)
         if idle_limit <= 0:
             idle_limit = max(self.timeout, 180.0)
@@ -523,10 +528,10 @@ class ResponsesWebsocketSession:
         while True:
             command: _WorkerCommand | None = None
             try:
-                if active_request_id is None:
-                    command = self._command_queue.get()
-                else:
+                if websocket is not None:
                     command = self._command_queue.get(timeout=self.recv_poll_timeout)
+                else:
+                    command = self._command_queue.get()
             except queue.Empty:
                 command = None
 
@@ -537,6 +542,7 @@ class ResponsesWebsocketSession:
                 if command.kind == "reset":
                     generation = max(generation, command.generation)
                     active_request_id = None
+                    pending_frame = None
                     _close_socket(websocket)
                     websocket = None
                     continue
@@ -567,7 +573,28 @@ class ResponsesWebsocketSession:
                     request_id = command.request_id or 0
                     started = False
                     try:
+                        if websocket is not None and active_request_id is None:
+                            # A relay can close an otherwise idle socket between
+                            # turns. Probe once before crossing the send boundary
+                            # so the next request can safely open a replacement.
+                            try:
+                                pending_frame = _recv_frame(websocket, poll_timeout=0.0)
+                            except TimeoutError:
+                                pass
+                            except Exception as exc:
+                                if type(exc).__name__ not in {
+                                    "TimeoutError",
+                                    "TimeoutException",
+                                }:
+                                    logger.debug(
+                                        "Responses WebSocket peer closed before a new "
+                                        "request; reconnecting: %s",
+                                        exc,
+                                    )
+                                    _close_socket(websocket)
+                                    websocket = None
                         if websocket is None or generation != command.generation:
+                            pending_frame = None
                             _close_socket(websocket)
                             websocket = None
                             generation = command.generation
@@ -618,11 +645,36 @@ class ResponsesWebsocketSession:
                         websocket = None
                     continue
 
-            if websocket is None or active_request_id is None:
+            if websocket is None:
+                continue
+
+            if active_request_id is None:
+                try:
+                    _recv_frame(websocket, poll_timeout=self.recv_poll_timeout)
+                except TimeoutError:
+                    continue
+                except Exception as exc:
+                    if type(exc).__name__ in {"TimeoutError", "TimeoutException"}:
+                        continue
+                    # A peer close between turns is safe to recover from: no
+                    # response.create request is in flight, and the committed
+                    # response snapshot remains valid for the next connection.
+                    logger.debug(
+                        "Responses WebSocket peer closed while idle; reconnecting before "
+                        "the next request: %s",
+                        exc,
+                    )
+                    _close_socket(websocket)
+                    websocket = None
+                    pending_frame = None
                 continue
 
             try:
-                frame = _recv_frame(websocket, poll_timeout=self.recv_poll_timeout)
+                if pending_frame is not None:
+                    frame = pending_frame
+                    pending_frame = None
+                else:
+                    frame = _recv_frame(websocket, poll_timeout=self.recv_poll_timeout)
             except TimeoutError:
                 if time.monotonic() - last_event_at >= idle_limit:
                     self._event_queue.put(
