@@ -152,6 +152,28 @@ def test_named_provider_responses_ws_keepalive_values_round_trip(monkeypatch):
     assert runtime["responses_ws_ping_timeout_seconds"] == 150.0
 
 
+def test_providers_dict_responses_ws_keepalive_values_round_trip(monkeypatch):
+    from hermes_cli import runtime_provider as rp
+
+    provider_config = {
+        "providers": {
+            "sub2api-openai": {
+                "api": "https://relay.example/v1",
+                "api_key": "test-key",
+                "transport": "codex_responses",
+                "responses_ws_ping_interval_seconds": 45,
+                "responses_ws_ping_timeout_seconds": 150,
+            }
+        }
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: provider_config)
+
+    runtime = rp.resolve_runtime_provider(requested="sub2api-openai")
+
+    assert runtime["responses_ws_ping_interval_seconds"] == 45.0
+    assert runtime["responses_ws_ping_timeout_seconds"] == 150.0
+
+
 def test_named_provider_invalid_responses_ws_keepalive_uses_defaults(monkeypatch):
     from hermes_cli import config as cfg
     from hermes_cli import runtime_provider as rp
