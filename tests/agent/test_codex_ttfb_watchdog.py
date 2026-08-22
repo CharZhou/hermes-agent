@@ -108,6 +108,37 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
         stop["flag"] = True
 
 
+def test_ttfb_watchdog_precedes_shorter_generic_stale_timeout(tmp_path, monkeypatch):
+    """A Codex silent stream must not be killed by the generic watchdog first."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        agent, "_compute_non_stream_stale_timeout", lambda *a, **k: 0.2
+    )
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0.5")
+
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(agent, "_abort_request_openai_client", lambda *_a, **_k: None)
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *_a, **_k: None)
+
+    stop = {"flag": False}
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        while not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.01)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    try:
+        with pytest.raises(TimeoutError, match="Codex stream produced no bytes"):
+            h.interruptible_api_call(agent, {"model": "gpt-5.6-terra", "input": "hi"})
+    finally:
+        stop["flag"] = True
+
+
 
 
 def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
@@ -345,7 +376,6 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
         assert "with no response" in str(excinfo.value)
     finally:
         stop["flag"] = True
-
 
 
 

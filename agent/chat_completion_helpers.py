@@ -1583,6 +1583,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
             )
             _ttfb_timeout = _ttfb_cap
 
+    # A Codex no-byte watchdog must always arbitrate before the generic
+    # non-stream stale detector. Otherwise the 90s default can kill a request
+    # before the configured 120s TTFB allowance has elapsed.
+    if _ttfb_enabled:
+        _stale_timeout = max(_stale_timeout, _ttfb_timeout)
+
     _codex_idle_enabled = _codex_watchdog_enabled
     _codex_idle_timeout = _env_float(
         "HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS",
