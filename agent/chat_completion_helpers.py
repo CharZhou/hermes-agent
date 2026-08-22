@@ -2702,6 +2702,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.responses_transport = fb_runtime.get("responses_transport") or "sse"
         agent.responses_ws_url = fb_runtime.get("responses_ws_url")
         agent.responses_ws_state = bool(fb_runtime.get("responses_ws_state", False))
+        agent.responses_ws_ping_interval_seconds = fb_runtime.get(
+            "responses_ws_ping_interval_seconds", 30.0
+        )
+        agent.responses_ws_ping_timeout_seconds = fb_runtime.get(
+            "responses_ws_ping_timeout_seconds", 90.0
+        )
         agent.responses_transport_provider = fb_runtime.get(
             "responses_transport_provider"
         )

@@ -10921,6 +10921,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         "responses_transport", "sse"
                     ),
                     responses_ws_url=snapshot.get("responses_ws_url"),
+                    responses_ws_state=snapshot.get("responses_ws_state", False),
+                    responses_ws_ping_interval_seconds=snapshot.get(
+                        "responses_ws_ping_interval_seconds", 30.0
+                    ),
+                    responses_ws_ping_timeout_seconds=snapshot.get(
+                        "responses_ws_ping_timeout_seconds", 90.0
+                    ),
                     responses_transport_provider=snapshot.get(
                         "responses_transport_provider"
                     ),
@@ -11067,6 +11074,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.api_mode = result.api_mode
         self.responses_transport = getattr(result, "responses_transport", "sse")
         self.responses_ws_url = getattr(result, "responses_ws_url", None) or None
+        self.responses_ws_state = getattr(result, "responses_ws_state", False)
+        self.responses_ws_ping_interval_seconds = getattr(
+            result, "responses_ws_ping_interval_seconds", 30.0
+        )
+        self.responses_ws_ping_timeout_seconds = getattr(
+            result, "responses_ws_ping_timeout_seconds", 90.0
+        )
         self.responses_transport_provider = (
             getattr(result, "responses_transport_provider", None) or None
         )
@@ -11083,6 +11097,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         result, "responses_transport", "sse"
                     ),
                     responses_ws_url=getattr(result, "responses_ws_url", None),
+                    responses_ws_state=getattr(result, "responses_ws_state", False),
+                    responses_ws_ping_interval_seconds=getattr(
+                        result, "responses_ws_ping_interval_seconds", 30.0
+                    ),
+                    responses_ws_ping_timeout_seconds=getattr(
+                        result, "responses_ws_ping_timeout_seconds", 90.0
+                    ),
                     responses_transport_provider=(
                         getattr(result, "responses_transport_provider", None)
                     ),
@@ -11474,6 +11495,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.api_mode = result.api_mode
         self.responses_transport = getattr(result, "responses_transport", "sse")
         self.responses_ws_url = getattr(result, "responses_ws_url", None) or None
+        self.responses_ws_state = getattr(result, "responses_ws_state", False)
+        self.responses_ws_ping_interval_seconds = getattr(
+            result, "responses_ws_ping_interval_seconds", 30.0
+        )
+        self.responses_ws_ping_timeout_seconds = getattr(
+            result, "responses_ws_ping_timeout_seconds", 90.0
+        )
         self.responses_transport_provider = (
             getattr(result, "responses_transport_provider", None) or None
         )
@@ -11491,6 +11519,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         result, "responses_transport", "sse"
                     ),
                     responses_ws_url=getattr(result, "responses_ws_url", None),
+                    responses_ws_state=getattr(result, "responses_ws_state", False),
+                    responses_ws_ping_interval_seconds=getattr(
+                        result, "responses_ws_ping_interval_seconds", 30.0
+                    ),
+                    responses_ws_ping_timeout_seconds=getattr(
+                        result, "responses_ws_ping_timeout_seconds", 90.0
+                    ),
                     responses_transport_provider=(
                         getattr(result, "responses_transport_provider", None)
                     ),

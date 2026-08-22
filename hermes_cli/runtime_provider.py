@@ -708,7 +708,12 @@ def _lift_responses_ws_transport(
     entry: Dict[str, Any], result: Dict[str, Any], *, identity: str,
 ) -> None:
     """Copy opt-in generic Responses WebSocket settings from a named entry."""
-    from agent.codex_responses_ws_transport import normalize_responses_transport
+    from agent.codex_responses_ws_transport import (
+        DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS,
+        DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS,
+        normalize_responses_transport,
+        normalize_responses_ws_keepalive_seconds,
+    )
 
     result["responses_transport"] = normalize_responses_transport(
         entry.get("responses_transport")
@@ -719,6 +724,14 @@ def _lift_responses_ws_transport(
     ws_state = entry.get("responses_ws_state")
     result["responses_ws_state"] = (
         ws_state if isinstance(ws_state, bool) else bool(is_truthy_value(ws_state))
+    )
+    result["responses_ws_ping_interval_seconds"] = normalize_responses_ws_keepalive_seconds(
+        entry.get("responses_ws_ping_interval_seconds"),
+        default=DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS,
+    )
+    result["responses_ws_ping_timeout_seconds"] = normalize_responses_ws_keepalive_seconds(
+        entry.get("responses_ws_ping_timeout_seconds"),
+        default=DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS,
     )
     result["responses_transport_provider"] = identity
 
@@ -1218,6 +1231,8 @@ def _resolve_named_custom_runtime(
             "responses_transport",
             "responses_ws_url",
             "responses_ws_state",
+            "responses_ws_ping_interval_seconds",
+            "responses_ws_ping_timeout_seconds",
             "responses_transport_provider",
         ):
             if key in custom_provider:
@@ -1282,6 +1297,8 @@ def _resolve_named_custom_runtime(
         "responses_transport",
         "responses_ws_url",
         "responses_ws_state",
+        "responses_ws_ping_interval_seconds",
+        "responses_ws_ping_timeout_seconds",
         "responses_transport_provider",
     ):
         if key in custom_provider:

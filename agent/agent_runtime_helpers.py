@@ -1350,6 +1350,12 @@ def try_recover_primary_transport(
         agent.responses_transport = rt.get("responses_transport", "sse")
         agent.responses_ws_url = rt.get("responses_ws_url")
         agent.responses_ws_state = bool(rt.get("responses_ws_state", False))
+        agent.responses_ws_ping_interval_seconds = rt.get(
+            "responses_ws_ping_interval_seconds", 30.0
+        )
+        agent.responses_ws_ping_timeout_seconds = rt.get(
+            "responses_ws_ping_timeout_seconds", 90.0
+        )
         agent.responses_transport_provider = rt.get(
             "responses_transport_provider"
         )
@@ -1441,6 +1447,8 @@ def codex_responses_ws_runtime_identity(agent) -> tuple:
         str(getattr(agent, "responses_transport", "") or "").strip().lower(),
         str(getattr(agent, "responses_ws_url", "") or "").strip(),
         bool(getattr(agent, "responses_ws_state", False)),
+        float(getattr(agent, "responses_ws_ping_interval_seconds", 30.0)),
+        float(getattr(agent, "responses_ws_ping_timeout_seconds", 90.0)),
         str(getattr(agent, "responses_transport_provider", "") or "").strip().lower(),
         str(getattr(agent, "api_key", "") or ""),
         tuple(sorted((str(k), str(v)) for k, v in dict(client_kwargs.get("default_headers") or {}).items())),
@@ -1656,6 +1664,12 @@ def restore_primary_runtime(agent) -> bool:
         agent.responses_transport = rt.get("responses_transport", "sse")
         agent.responses_ws_url = rt.get("responses_ws_url")
         agent.responses_ws_state = bool(rt.get("responses_ws_state", False))
+        agent.responses_ws_ping_interval_seconds = rt.get(
+            "responses_ws_ping_interval_seconds", 30.0
+        )
+        agent.responses_ws_ping_timeout_seconds = rt.get(
+            "responses_ws_ping_timeout_seconds", 90.0
+        )
         agent.responses_transport_provider = rt.get(
             "responses_transport_provider"
         )
@@ -2696,6 +2710,8 @@ def switch_model(
     responses_transport='sse',
     responses_ws_url=None,
     responses_ws_state=False,
+    responses_ws_ping_interval_seconds=30.0,
+    responses_ws_ping_timeout_seconds=90.0,
     responses_transport_provider=None,
     request_overrides=None,
 ):
@@ -2837,7 +2853,12 @@ def switch_model(
                 "refusing to keep the previous provider's endpoint"
             )
         agent.api_mode = api_mode
-        from agent.codex_responses_ws_transport import normalize_responses_transport
+        from agent.codex_responses_ws_transport import (
+            DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS,
+            DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS,
+            normalize_responses_transport,
+            normalize_responses_ws_keepalive_seconds,
+        )
 
         agent.responses_transport = normalize_responses_transport(
             responses_transport
@@ -2846,6 +2867,14 @@ def switch_model(
             str(responses_ws_url).strip() if responses_ws_url else None
         )
         agent.responses_ws_state = bool(responses_ws_state)
+        agent.responses_ws_ping_interval_seconds = normalize_responses_ws_keepalive_seconds(
+            responses_ws_ping_interval_seconds,
+            default=DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS,
+        )
+        agent.responses_ws_ping_timeout_seconds = normalize_responses_ws_keepalive_seconds(
+            responses_ws_ping_timeout_seconds,
+            default=DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS,
+        )
         agent.responses_transport_provider = (
             str(responses_transport_provider).strip().lower()
             if responses_transport_provider
@@ -3112,6 +3141,12 @@ def switch_model(
         "responses_transport": getattr(agent, "responses_transport", "sse"),
         "responses_ws_url": getattr(agent, "responses_ws_url", None),
         "responses_ws_state": bool(getattr(agent, "responses_ws_state", False)),
+        "responses_ws_ping_interval_seconds": getattr(
+            agent, "responses_ws_ping_interval_seconds", 30.0
+        ),
+        "responses_ws_ping_timeout_seconds": getattr(
+            agent, "responses_ws_ping_timeout_seconds", 90.0
+        ),
         "responses_transport_provider": getattr(
             agent, "responses_transport_provider", None
         ),

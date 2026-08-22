@@ -121,6 +121,90 @@ def test_named_provider_responses_ws_state_round_trips_true(monkeypatch):
     assert runtime["responses_ws_state"] is True
 
 
+def test_named_provider_responses_ws_keepalive_values_round_trip(monkeypatch):
+    from hermes_cli import config as cfg
+    from hermes_cli import runtime_provider as rp
+
+    provider_config = {
+        "custom_providers": [
+            {
+                "name": "relay",
+                "provider_key": "relay",
+                "base_url": "https://relay.example/v1",
+                "api_key": "test-key",
+                "api_mode": "codex_responses",
+                "responses_ws_ping_interval_seconds": 45,
+                "responses_ws_ping_timeout_seconds": 150,
+            }
+        ]
+    }
+    monkeypatch.setattr(cfg, "load_config", lambda: provider_config)
+    monkeypatch.setattr(rp, "load_config", lambda: provider_config)
+    monkeypatch.setattr(
+        rp,
+        "get_compatible_custom_providers",
+        lambda config: config.get("custom_providers"),
+    )
+
+    runtime = rp.resolve_runtime_provider(requested="relay")
+
+    assert runtime["responses_ws_ping_interval_seconds"] == 45.0
+    assert runtime["responses_ws_ping_timeout_seconds"] == 150.0
+
+
+def test_providers_dict_responses_ws_keepalive_values_round_trip(monkeypatch):
+    from hermes_cli import runtime_provider as rp
+
+    provider_config = {
+        "providers": {
+            "sub2api-openai": {
+                "api": "https://relay.example/v1",
+                "api_key": "test-key",
+                "transport": "codex_responses",
+                "responses_ws_ping_interval_seconds": 45,
+                "responses_ws_ping_timeout_seconds": 150,
+            }
+        }
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: provider_config)
+
+    runtime = rp.resolve_runtime_provider(requested="sub2api-openai")
+
+    assert runtime["responses_ws_ping_interval_seconds"] == 45.0
+    assert runtime["responses_ws_ping_timeout_seconds"] == 150.0
+
+
+def test_named_provider_invalid_responses_ws_keepalive_uses_defaults(monkeypatch):
+    from hermes_cli import config as cfg
+    from hermes_cli import runtime_provider as rp
+
+    provider_config = {
+        "custom_providers": [
+            {
+                "name": "relay",
+                "provider_key": "relay",
+                "base_url": "https://relay.example/v1",
+                "api_key": "test-key",
+                "api_mode": "codex_responses",
+                "responses_ws_ping_interval_seconds": 0,
+                "responses_ws_ping_timeout_seconds": float("inf"),
+            }
+        ]
+    }
+    monkeypatch.setattr(cfg, "load_config", lambda: provider_config)
+    monkeypatch.setattr(rp, "load_config", lambda: provider_config)
+    monkeypatch.setattr(
+        rp,
+        "get_compatible_custom_providers",
+        lambda config: config.get("custom_providers"),
+    )
+
+    runtime = rp.resolve_runtime_provider(requested="relay")
+
+    assert runtime["responses_ws_ping_interval_seconds"] == 30.0
+    assert runtime["responses_ws_ping_timeout_seconds"] == 90.0
+
+
 def test_normalize_custom_provider_entry_preserves_responses_ws_state():
     from hermes_cli.config import _normalize_custom_provider_entry
 
@@ -136,11 +220,26 @@ def test_normalize_custom_provider_entry_preserves_responses_ws_state():
             "name": "relay",
             "base_url": "https://relay.example/v1",
             "responses_ws_state": True,
+            "responses_ws_ping_interval_seconds": 45,
+            "responses_ws_ping_timeout_seconds": "150",
         }
     )
 
     assert false_entry["responses_ws_state"] is False
     assert true_entry["responses_ws_state"] is True
+    assert true_entry["responses_ws_ping_interval_seconds"] == 45.0
+    assert true_entry["responses_ws_ping_timeout_seconds"] == 150.0
+
+    invalid_entry = _normalize_custom_provider_entry(
+        {
+            "name": "relay",
+            "base_url": "https://relay.example/v1",
+            "responses_ws_ping_interval_seconds": 0,
+            "responses_ws_ping_timeout_seconds": False,
+        }
+    )
+    assert "responses_ws_ping_interval_seconds" not in invalid_entry
+    assert "responses_ws_ping_timeout_seconds" not in invalid_entry
 
 
 @pytest.mark.parametrize(
@@ -958,7 +1057,16 @@ def test_error_classifier_handles_generic_ws_errors():
     assert rejected.should_fallback is False
 
 
-def test_run_codex_stream_lazily_owns_stateful_session(monkeypatch):
+@pytest.mark.parametrize(
+    ("keepalive", "expected_keepalive"),
+    [
+        (None, (30.0, 90.0)),
+        ((45.0, 150.0), (45.0, 150.0)),
+    ],
+)
+def test_run_codex_stream_lazily_owns_stateful_session(
+    monkeypatch, keepalive, expected_keepalive
+):
     import agent.codex_responses_ws_transport as transport
     import agent.codex_responses_ws_session as session_mod
     from agent.codex_runtime import run_codex_stream
@@ -997,6 +1105,11 @@ def test_run_codex_stream_lazily_owns_stateful_session(monkeypatch):
     agent._fire_streamed_codex_commentary = lambda _t: None
     agent._touch_activity = lambda _s: None
     agent._client_log_context = lambda: "ctx"
+    if keepalive is not None:
+        (
+            agent.responses_ws_ping_interval_seconds,
+            agent.responses_ws_ping_timeout_seconds,
+        ) = keepalive
 
     result = SimpleNamespace(output=[], usage=None, status="completed")
     created_sessions = []
@@ -1025,6 +1138,8 @@ def test_run_codex_stream_lazily_owns_stateful_session(monkeypatch):
     assert created_sessions == [agent._codex_responses_ws_session]
     assert created_sessions[0].kwargs["state_enabled"] is True
     assert created_sessions[0].kwargs["client"] is client
+    assert created_sessions[0].kwargs["ping_interval"] == expected_keepalive[0]
+    assert created_sessions[0].kwargs["ping_timeout"] == expected_keepalive[1]
     assert [call["api_kwargs"]["input"] for call in created_sessions[0].stream_calls] == [
         "hello",
         "again",

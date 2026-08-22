@@ -655,6 +655,12 @@ class SessionManager:
                     "responses_transport": runtime.get("responses_transport", "sse"),
                     "responses_ws_url": runtime.get("responses_ws_url"),
                     "responses_ws_state": runtime.get("responses_ws_state", False),
+                    "responses_ws_ping_interval_seconds": runtime.get(
+                        "responses_ws_ping_interval_seconds", 30.0
+                    ),
+                    "responses_ws_ping_timeout_seconds": runtime.get(
+                        "responses_ws_ping_timeout_seconds", 90.0
+                    ),
                     "responses_transport_provider": runtime.get("responses_transport_provider"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),

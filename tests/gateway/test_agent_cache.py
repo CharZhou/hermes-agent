@@ -79,6 +79,8 @@ class TestAgentConfigSignature:
                 "wss://relay.example/two",
             ),
             ("responses_ws_state", False, True),
+            ("responses_ws_ping_interval_seconds", 30.0, 45.0),
+            ("responses_ws_ping_timeout_seconds", 90.0, 150.0),
             (
                 "responses_transport_provider",
                 "custom:one",
@@ -99,6 +101,8 @@ class TestAgentConfigSignature:
             "responses_transport": "auto",
             "responses_ws_url": "wss://relay.example/responses",
             "responses_ws_state": False,
+            "responses_ws_ping_interval_seconds": 30.0,
+            "responses_ws_ping_timeout_seconds": 90.0,
             "responses_transport_provider": "custom:relay",
         }
         first = dict(runtime, **{field: before})

@@ -147,6 +147,8 @@ model:
 #     api_mode: codex_responses
 #     responses_transport: auto
 #     responses_ws_state: true
+#     responses_ws_ping_interval_seconds: 30
+#     responses_ws_ping_timeout_seconds: 90
 #     # responses_ws_url: wss://relay.example.com/v1/responses
 
 
