@@ -343,6 +343,16 @@ custom_providers:
         context_length: 32768
 ```
 
+Hermes 默认要求 64K 上下文窗口。若模型的实际窗口在 32K 到 64K 之间，请显式启用较低策略；这不会使小于 32K 的模型窗口可用：
+
+```yaml
+model:
+  context_length: 32768          # 模型实际的上下文窗口
+  minimum_context_length: 32000  # 启用 Hermes 的 32K 最低要求
+```
+
+启用后，Hermes 会缩减初始提示词、对可选工具使用 Tool Search，并更早压缩历史记录。运行时若报告少于 32,000 token，仍会被拒绝。留空 `minimum_context_length` 则维持默认 64K 最低要求。
+
 有关自动检测的工作原理及所有覆盖选项，请参阅[上下文长度检测](../integrations/providers.md#context-length-detection)。
 
 ---

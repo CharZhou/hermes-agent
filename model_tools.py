@@ -626,9 +626,11 @@ def _compute_tool_definitions(
     # case some caller invokes get_tool_definitions twice.
     try:
         from tools.tool_search import assemble_tool_defs, load_config as _load_ts_config
-        ts_cfg = _load_ts_config()
+        context_length = _resolve_active_context_length()
+        ts_cfg = _load_ts_config(
+            small_context_mode=_uses_small_context_tool_mode(context_length),
+        )
         if not skip_tool_search_assembly and ts_cfg.enabled != "off":
-            context_length = _resolve_active_context_length()
             assembly = assemble_tool_defs(
                 filtered_tools,
                 context_length=context_length,
@@ -650,6 +652,32 @@ def _compute_tool_definitions(
         logger.warning("Tool search assembly skipped: %s", e)
 
     return filtered_tools
+
+
+def _uses_small_context_tool_mode(context_length: int) -> bool:
+    """Return whether the configured runtime opted into a sub-64K session."""
+    if not isinstance(context_length, int) or context_length <= 0:
+        return False
+    try:
+        from agent.model_metadata import (
+            MINIMUM_CONTEXT_LENGTH,
+            SMALL_CONTEXT_MINIMUM_LENGTH,
+            resolve_minimum_context_length,
+        )
+        from hermes_cli.config import load_config as _load
+
+        cfg = _load() or {}
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        minimum = resolve_minimum_context_length(
+            model_cfg.get("minimum_context_length")
+        )
+        return (
+            minimum == SMALL_CONTEXT_MINIMUM_LENGTH
+            and context_length < MINIMUM_CONTEXT_LENGTH
+        )
+    except Exception as e:
+        logger.debug("Could not resolve small-context tool mode: %s", e)
+        return False
 
 
 def _resolve_active_context_length() -> int:

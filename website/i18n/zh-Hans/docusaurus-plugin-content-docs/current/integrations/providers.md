@@ -1081,6 +1081,16 @@ model:
 仅当需要限制单次响应长度时，才设置 `model.max_tokens`。
 :::
 
+Hermes 默认要求 64K 上下文窗口。对于真实窗口至少为 32K、但低于 64K 的模型，请与实际的 `context_length` 一起显式配置 `model.minimum_context_length: 32000`：
+
+```yaml
+model:
+  context_length: 32768          # 模型实际的上下文窗口
+  minimum_context_length: 32000  # 显式启用 32K 策略
+```
+
+该设置不会扩大模型的真实窗口：若运行时报告少于 32,000 token，Hermes 仍会拒绝启动。32K 策略会缩减启动提示词预算，对可选工具使用 Tool Search，并更早压缩历史记录以为响应留出空间。不设置此项则保留默认的 64K 要求及原有预算。
+
 Hermes 使用多源解析链来检测模型和提供商的正确上下文窗口：
 
 1. **配置覆盖** — config.yaml 中的 `model.context_length`（最高优先级）

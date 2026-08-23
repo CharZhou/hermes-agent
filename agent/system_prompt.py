@@ -371,6 +371,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         if isinstance(_cc_len, int) and _cc_len > 0:
             _ctx_len = _cc_len
 
+    _small_context_mode = False
+    if _ctx_len:
+        try:
+            from agent.model_metadata import (
+                MINIMUM_CONTEXT_LENGTH,
+                SMALL_CONTEXT_MINIMUM_LENGTH,
+            )
+            _small_context_mode = (
+                getattr(agent, "minimum_context_length", None)
+                == SMALL_CONTEXT_MINIMUM_LENGTH
+                and _ctx_len < MINIMUM_CONTEXT_LENGTH
+            )
+        except Exception:
+            pass
+
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
@@ -379,10 +394,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
+        _soul_kwargs = {"allow_below_default": True} if _small_context_mode else {}
         # Scope the SOUL.md read to the agent's OWN home (see _agent_home) —
         # ambient resolution on a thread that lost the HERMES_HOME ContextVar
         # reads the launch profile's SOUL.md instead (#50233).
-        _soul_content = _r.load_soul_md(_ctx_len, home_override=_agent_home(agent))
+        _soul_content = _r.load_soul_md(
+            _ctx_len, home_override=_agent_home(agent), **_soul_kwargs,
+        )
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True
@@ -792,11 +810,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # (developing Hermes). Every other surface (desktop chat panel,
         # gateway daemons) self-spawns into the install tree, where the
         # fallback would inject this repo's contributor AGENTS.md (#64590).
+        _context_file_kwargs = (
+            {"allow_below_default": True} if _small_context_mode else {}
+        )
         context_files_prompt = _r.build_context_files_prompt(
             cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
             context_length=_ctx_len,
             allow_install_tree_fallback=agent.platform in ("cli", "tui"),
-            home_override=_agent_home(agent))
+            home_override=_agent_home(agent),
+            **_context_file_kwargs,
+        )
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

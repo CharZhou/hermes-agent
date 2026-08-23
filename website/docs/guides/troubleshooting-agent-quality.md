@@ -72,6 +72,21 @@ providers:
 
 Ollama users: if you set a custom `num_ctx`, set the matching context length in Hermes — Ollama's `/api/show` reports the model's *maximum* context, not the effective `num_ctx` you configured. On a running gateway, edits to `model.context_length` or any `compression.*` key take effect on the next message — no restart needed.
 
+Hermes requires 64K by default. When the model's real window is between 32K
+and 64K, opt in to the lower policy explicitly; this does not make a smaller
+model window usable:
+
+```yaml
+model:
+  context_length: 32768          # the model's actual context window
+  minimum_context_length: 32000  # opt in to Hermes' 32K minimum
+```
+
+With this opt-in, Hermes keeps the initial prompt smaller, relies on Tool
+Search for optional tools, and compresses earlier. A runtime reporting fewer
+than 32,000 tokens is still rejected. Leave `minimum_context_length` unset to
+keep the default 64K minimum.
+
 See [Context Length Detection](/integrations/providers#context-length-detection) for how auto-detection works and all override options.
 
 ## 4. "I told it something and it forgot" — the frozen memory snapshot

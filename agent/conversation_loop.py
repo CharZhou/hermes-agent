@@ -497,7 +497,10 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     runtime_ctx = getattr(agent, "_ollama_num_ctx", None)
     if not isinstance(runtime_ctx, int) or runtime_ctx <= 0:
         return None
-    if runtime_ctx >= MINIMUM_CONTEXT_LENGTH:
+    minimum_context = getattr(agent, "minimum_context_length", MINIMUM_CONTEXT_LENGTH)
+    if isinstance(minimum_context, bool) or not isinstance(minimum_context, int):
+        minimum_context = MINIMUM_CONTEXT_LENGTH
+    if runtime_ctx >= minimum_context:
         return None
 
     model = getattr(agent, "model", "") or "the selected model"
@@ -514,7 +517,7 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
         provider,
         base_url,
         runtime_ctx,
-        MINIMUM_CONTEXT_LENGTH,
+        minimum_context,
         request_tokens,
         tool_count,
         getattr(agent, "session_id", None) or "none",
@@ -522,14 +525,14 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
 
     return (
         f"Ollama loaded `{model}` with only {runtime_ctx:,} tokens of runtime "
-        f"context, but Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens "
+        f"context, but Hermes needs at least {minimum_context:,} tokens "
         "for reliable tool use.\n\n"
         "Increase the Ollama context for this model and restart/reload the "
-        "model before trying again. A known-good starting point is 65,536 "
-        "tokens. In Hermes config, set `model.ollama_num_ctx: 65536` "
-        "(and `model.context_length: 65536` if you also override the displayed "
+        f"model before trying again. A known-good starting point is {minimum_context:,} "
+        f"tokens. In Hermes config, set `model.ollama_num_ctx: {minimum_context}` "
+        f"(and `model.context_length: {minimum_context}` if you also override the displayed "
         "model context). If you manage the model through an Ollama Modelfile, "
-        "set `PARAMETER num_ctx 65536` there instead."
+        f"set `PARAMETER num_ctx {minimum_context}` there instead."
     )
 
 

@@ -135,6 +135,20 @@ def test_rejects_aux_below_minimum_context(mock_get_client, mock_ctx_len):
     assert "below the minimum" in err
 
 
+@patch("agent.model_metadata.get_model_context_length", return_value=32_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_allows_aux_at_configured_32k_minimum(mock_get_client, mock_ctx_len):
+    agent = _make_agent(main_context=32_000, threshold_percent=0.50)
+    agent.minimum_context_length = 32_000
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "small-aux-model")
+    agent._emit_status = lambda msg: None
+
+    agent._check_compression_model_feasibility()
+
+
 
 
 def test_feasibility_check_passes_live_main_runtime():
@@ -404,7 +418,6 @@ def test_threshold_suggestion_kept_for_large_context_main(mock_get_client, mock_
 
     assert len(messages) == 1
     assert "threshold: 0.30" in messages[0]
-
 
 
 

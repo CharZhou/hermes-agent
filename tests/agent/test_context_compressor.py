@@ -420,6 +420,16 @@ class TestCompress:
         assert t < MINIMUM_CONTEXT_LENGTH
         assert t == 54400  # 85% of 64000
 
+    def test_32k_policy_uses_70_percent_of_effective_input_window(self):
+        threshold = ContextCompressor._compute_threshold_tokens(
+            32_000,
+            0.50,
+            max_tokens=4_000,
+            minimum_context_length=32_000,
+        )
+
+        assert threshold == 19_600
+
 
 
 

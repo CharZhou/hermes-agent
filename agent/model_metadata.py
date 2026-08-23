@@ -399,10 +399,22 @@ def _warn_context_length_fallback(model: str, base_url: str) -> None:
         model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}",
     )
 
-# Minimum context length required to run Hermes Agent.  Models with fewer
-# tokens cannot maintain enough working memory for tool-calling workflows.
-# Sessions, model switches, and cron jobs should reject models below this.
+# Default minimum context length required to run Hermes Agent. Models with
+# fewer tokens cannot maintain enough working memory for tool-calling workflows
+# unless the user explicitly opts into the supported 32K small-context mode.
 MINIMUM_CONTEXT_LENGTH = 64_000
+SMALL_CONTEXT_MINIMUM_LENGTH = 32_000
+
+
+def resolve_minimum_context_length(raw: object) -> int:
+    """Resolve the user-selected agent context floor without accepting guesses."""
+    if (
+        isinstance(raw, int)
+        and not isinstance(raw, bool)
+        and raw >= SMALL_CONTEXT_MINIMUM_LENGTH
+    ):
+        return raw
+    return MINIMUM_CONTEXT_LENGTH
 
 # Short-lived in-process cache for local-server context probes. Bounds the
 # probe rate when the new local-endpoint live-probe paths (reconcile-on-hit +

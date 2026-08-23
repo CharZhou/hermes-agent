@@ -24,6 +24,17 @@ def _model_cfg(**overrides):
 
 
 class TestResolveActiveContextLengthProviderAware:
+
+    def test_32k_policy_enables_small_context_tool_mode(self):
+        import model_tools
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"model": {"minimum_context_length": 32_000}},
+        ):
+            assert model_tools._uses_small_context_tool_mode(32_768)
+            assert not model_tools._uses_small_context_tool_mode(64_000)
+
     def test_passes_provider_base_url_and_key_from_runtime(self):
         """Resolved runtime credentials must reach get_model_context_length."""
         import model_tools

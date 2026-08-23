@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.prompt_builder import drain_truncation_warnings
 from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
 
@@ -60,6 +61,27 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+    def test_32k_policy_requests_smaller_context_file_budget(self):
+        captured = {}
+
+        def fake_context_files(**kwargs):
+            captured.update(kwargs)
+            return ""
+
+        agent = _make_agent(
+            context_compressor=SimpleNamespace(context_length=32_768),
+            minimum_context_length=32_000,
+        )
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
+        ):
+            build_system_prompt_parts(agent)
+
+        assert captured["allow_below_default"] is True
 
 
 def _stable_prompt(agent):
@@ -262,6 +284,7 @@ class TestNamedProfileHintIntegration:
 
 
 def test_build_system_prompt_records_stable_prefix():
+    drain_truncation_warnings()
     agent = _make_agent()
     with (
         patch("run_agent.load_soul_md", return_value=""),

@@ -1216,6 +1216,23 @@ Set `context_length` when auto-detection gets the window size wrong.
 Set `model.max_tokens` only when you need to limit how long individual responses can be.
 :::
 
+Hermes requires a 64K context window by default. For a model whose real
+window is at least 32K but below 64K, opt in explicitly with
+`model.minimum_context_length: 32000` alongside its actual
+`context_length`:
+
+```yaml
+model:
+  context_length: 32768          # the model's actual context window
+  minimum_context_length: 32000  # explicit opt-in to the 32K policy
+```
+
+This setting never increases the model's real window: Hermes still rejects a
+runtime that reports fewer than 32,000 tokens. The 32K policy reduces startup
+prompt budgets, uses Tool Search for optional tools, and compresses history
+earlier to leave room for responses. Omit it to retain the default 64K
+requirement and its existing budgets.
+
 Hermes uses a multi-source resolution chain to detect the correct context window for your model and provider:
 
 1. **Config override** — `model.context_length` in config.yaml (highest priority)

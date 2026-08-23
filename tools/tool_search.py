@@ -103,7 +103,9 @@ class ToolSearchConfig:
     listing_max_tokens: int = 4000
 
     @classmethod
-    def from_raw(cls, raw: Any) -> "ToolSearchConfig":
+    def from_raw(
+        cls, raw: Any, *, small_context_mode: bool = False,
+    ) -> "ToolSearchConfig":
         """Build a config from a raw dict / bool / None.
 
         Accepts the legacy bool shape (``tools.tool_search: true``) and the
@@ -113,13 +115,16 @@ class ToolSearchConfig:
         break the agent.
         """
         if raw is True:
-            return cls(enabled="auto", threshold_pct=5.0,
+            return cls(enabled="on" if small_context_mode else "auto",
+                       threshold_pct=2.0 if small_context_mode else 5.0,
                        search_default_limit=5, max_search_limit=20)
         if raw is False:
-            return cls(enabled="off", threshold_pct=5.0,
+            return cls(enabled="on" if small_context_mode else "off",
+                       threshold_pct=2.0 if small_context_mode else 5.0,
                        search_default_limit=5, max_search_limit=20)
         if not isinstance(raw, dict):
-            return cls(enabled="auto", threshold_pct=5.0,
+            return cls(enabled="on" if small_context_mode else "auto",
+                       threshold_pct=2.0 if small_context_mode else 5.0,
                        search_default_limit=5, max_search_limit=20)
 
         enabled_raw = str(raw.get("enabled", "auto")).strip().lower()
@@ -134,6 +139,9 @@ class ToolSearchConfig:
 
         threshold_pct = _safe_float(raw.get("threshold_pct"), 5.0)
         threshold_pct = max(0.0, min(100.0, threshold_pct))
+        if small_context_mode:
+            enabled = "on"
+            threshold_pct = min(threshold_pct, 2.0)
 
         max_search_limit = max(1, min(50, _safe_int(raw.get("max_search_limit"), 20)))
         search_default_limit = max(1, min(max_search_limit,
@@ -174,7 +182,7 @@ def _safe_float(value: Any, fallback: float) -> float:
         return fallback
 
 
-def load_config() -> ToolSearchConfig:
+def load_config(*, small_context_mode: bool = False) -> ToolSearchConfig:
     """Load tool-search config from the user config file."""
     try:
         from hermes_cli.config import load_config as _load
@@ -182,10 +190,12 @@ def load_config() -> ToolSearchConfig:
         tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
         if not isinstance(tools_cfg, dict):
             tools_cfg = {}
-        return ToolSearchConfig.from_raw(tools_cfg.get("tool_search"))
+        return ToolSearchConfig.from_raw(
+            tools_cfg.get("tool_search"), small_context_mode=small_context_mode,
+        )
     except Exception as e:
         logger.debug("Failed to load tool-search config: %s", e)
-        return ToolSearchConfig.from_raw(None)
+        return ToolSearchConfig.from_raw(None, small_context_mode=small_context_mode)
 
 
 # ---------------------------------------------------------------------------
