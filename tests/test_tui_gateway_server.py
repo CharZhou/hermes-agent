@@ -3656,7 +3656,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
                 "id": target,
                 "model": "gpt-5.4",
                 "billing_provider": "openai-codex",
-                "model_config": '{"reasoning_config":{"enabled":true,"effort":"high"},"service_tier":"priority","base_url":"https://custom.example/v1","api_mode":"chat_completions"}',
+                "model_config": '{"reasoning_config":{"enabled":true,"effort":"high"},"service_tier":"priority","base_url":"https://custom.example/v1","api_mode":"codex_responses"}',
             }
 
         def reopen_session(self, target):
@@ -3698,17 +3698,16 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     )
 
     assert resp["result"]["info"] == {"model": "gpt-5.4", "provider": "openai-codex"}
-    assert captured["model_override"] == {
-        "model": "gpt-5.4",
-        "provider": "openai-codex",
-        "base_url": "https://custom.example/v1",
-        "api_mode": "chat_completions",
-    }
+    model_override = captured["model_override"]
+    assert model_override["model"] == "gpt-5.4"
+    assert model_override["provider"] == "openai-codex"
+    assert model_override["base_url"] == "https://custom.example/v1"
+    assert model_override["api_mode"] == "codex_responses"
     assert captured["provider_override"] == "openai-codex"
     assert captured["reasoning_config_override"] == {"enabled": True, "effort": "high"}
     assert captured["service_tier_override"] == "priority"
     runtime_sid = resp["result"]["session_id"]
-    assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
+    assert server._sessions[runtime_sid]["model_override"] == model_override
 
 
 def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):

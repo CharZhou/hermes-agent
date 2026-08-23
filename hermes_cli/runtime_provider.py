@@ -1239,7 +1239,6 @@ def _resolve_named_custom_runtime(
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
         result["request_overrides"] = request_overrides
-
     # Custom providers in the OpenCode family (name extends opencode-go/zen,
     # or base_url hosted on opencode.ai) serve models behind different API
     # surfaces per model — a static api_mode 503s for /v1/responses-only

@@ -1042,6 +1042,91 @@ def test_core_task_instrumentation_preserves_prompt_history_and_tool_schema(
     assert json.dumps(agent.tools, ensure_ascii=False, sort_keys=True) == tools_before
 
 
+@pytest.mark.parametrize("platform", ["cli", "tui", "desktop", "acp", "api_server"])
+def test_core_turn_binds_agent_platform_without_trusting_process_env(
+    direct_runtime,
+    monkeypatch,
+    platform,
+):
+    from gateway.session_context import get_session_env, reset_session_vars
+    from run_agent import AIAgent
+
+    reset_session_vars()
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "hostile-process-value")
+    agent = object.__new__(AIAgent)
+    agent.session_id = f"{platform}-session"
+    agent.platform = platform
+    agent._parent_session_id = None
+    agent._session_db = None
+    observed = []
+
+    def fake_run_conversation(*_args, **_kwargs):
+        observed.append(get_session_env("HERMES_SESSION_PLATFORM"))
+        return {"final_response": "ok", "completed": True}
+
+    monkeypatch.setattr(
+        "agent.conversation_loop.run_conversation",
+        fake_run_conversation,
+    )
+
+    assert AIAgent.run_conversation(agent, "hello")["completed"] is True
+    assert observed == [platform]
+    assert get_session_env("HERMES_SESSION_PLATFORM") == "hostile-process-value"
+
+
+def test_core_turn_restores_platform_after_exception(direct_runtime, monkeypatch):
+    from gateway.session_context import get_session_env, reset_session_vars
+    from run_agent import AIAgent
+
+    reset_session_vars()
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "outer-process-value")
+    agent = object.__new__(AIAgent)
+    agent.session_id = "cli-session"
+    agent.platform = "cli"
+    agent._parent_session_id = None
+    agent._session_db = None
+
+    def fail_inside_turn(*_args, **_kwargs):
+        assert get_session_env("HERMES_SESSION_PLATFORM") == "cli"
+        raise RuntimeError("turn failed")
+
+    monkeypatch.setattr(
+        "agent.conversation_loop.run_conversation",
+        fail_inside_turn,
+    )
+
+    with pytest.raises(RuntimeError, match="turn failed"):
+        AIAgent.run_conversation(agent, "hello")
+    assert get_session_env("HERMES_SESSION_PLATFORM") == "outer-process-value"
+
+
+def test_subagent_turn_preserves_inherited_parent_platform(direct_runtime, monkeypatch):
+    from gateway.session_context import clear_session_vars, get_session_env, set_session_vars
+    from run_agent import AIAgent
+
+    tokens = set_session_vars(platform="telegram")
+    agent = object.__new__(AIAgent)
+    agent.session_id = "child-session"
+    agent.platform = "subagent"
+    agent._parent_session_id = "parent-session"
+    agent._session_db = None
+    observed = []
+    monkeypatch.setattr(
+        "agent.conversation_loop.run_conversation",
+        lambda *_args, **_kwargs: observed.append(
+            get_session_env("HERMES_SESSION_PLATFORM")
+        )
+        or {"final_response": "ok", "completed": True},
+    )
+
+    try:
+        AIAgent.run_conversation(agent, "hello")
+        assert observed == ["telegram"]
+        assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
+    finally:
+        clear_session_vars(tokens)
+
+
 def test_skipped_turn_does_not_finish_another_sessions_matching_task(
     direct_runtime,
     monkeypatch,

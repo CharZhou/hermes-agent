@@ -1346,6 +1346,7 @@ def try_recover_primary_transport(
         agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]
         agent.api_mode = rt["api_mode"]
+        agent.request_overrides = dict(rt.get("request_overrides") or {})
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
@@ -1577,6 +1578,7 @@ def restore_primary_runtime(agent) -> bool:
         agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
         agent.api_mode = rt["api_mode"]
+        agent.request_overrides = dict(rt.get("request_overrides") or {})
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
@@ -2600,7 +2602,15 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+def switch_model(
+    agent,
+    new_model,
+    new_provider,
+    api_key='',
+    base_url='',
+    api_mode='',
+    request_overrides=None,
+):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -2674,6 +2684,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
     # live dict doesn't poison the rollback target.
     _snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
+    _snapshot["request_overrides"] = dict(
+        getattr(agent, "request_overrides", {}) or {}
+    )
     # Snapshot the credential pool reference so a failed client rebuild can
     # restore the original pool (issue #52727: pool reload is part of this
     # switch and must be reversible on rollback).
@@ -2730,6 +2743,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 "refusing to keep the previous provider's endpoint"
             )
         agent.api_mode = api_mode
+        agent.request_overrides = dict(request_overrides or {})
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -2986,6 +3000,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
+        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

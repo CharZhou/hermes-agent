@@ -2563,7 +2563,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 or base_url_hostname(fb_base_url_hint) == "api.anthropic.com"
             ):
                 fb_api_mode = "anthropic_messages"
-        
+
         # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
         # when no explicit key is in the fallback config. Host match
         # (not substring) — see GHSA-76xc-57q6-vm5m.
@@ -2592,11 +2592,54 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 fb_model, fb_provider, _norm_err,
             )
 
+        # Resolve the complete fallback runtime through the same canonical
+        # resolver used at construction and by /model. The client supplies
+        # concrete credentials and endpoint, so this reuses the official
+        # api-mode/transport/provider parser without a second auth lookup.
+        # Keep it before any agent mutation so the route and its request body
+        # overrides move as one runtime unit.
+        from hermes_cli.auth import AuthError
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        fb_base_url = str(fb_client.base_url)
+        try:
+            fb_runtime = resolve_runtime_provider(
+                requested=fb_provider,
+                explicit_base_url=fb_base_url,
+                explicit_api_key=fb_client.api_key,
+                target_model=fb_model,
+            )
+        except AuthError as exc:
+            if exc.code != "invalid_provider":
+                raise
+            # The fallback client already resolved an explicit endpoint. Keep
+            # that upstream-supported path when its temporary provider alias
+            # is not registered in the local runtime-provider catalog.
+            logger.debug(
+                "Fallback %s: runtime enrichment skipped for unregistered provider: %s",
+                fb_model,
+                exc,
+            )
+            fb_runtime = {}
+        resolved_fb_provider = str(fb_runtime.get("provider") or fb_provider)
+        resolved_fb_requested_provider = str(
+            fb_runtime.get("requested_provider") or fb_provider
+        )
+        # The normalized fallback-chain model is authoritative. A named custom
+        # runtime may expose its configured default model even when target_model
+        # selected a different explicit chain entry.
+        fb_base_url = str(fb_runtime.get("base_url") or fb_base_url)
+        fb_request_overrides = dict(fb_runtime.get("request_overrides") or {})
+
         # Re-determine api_mode from provider / resolved base URL / model when
         # the pre-computed pass above landed on the default and the user did
         # not pin api_mode explicitly. An explicit fb.api_mode (even
         # "chat_completions") must never be overridden here.
-        fb_base_url = str(fb_client.base_url)
+        # Keep an original /anthropic hint authoritative over the canonical
+        # resolver's generic mode: the client may have already rewritten it
+        # to /v1 by this point. Otherwise use the resolver's complete runtime.
+        if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
+            fb_api_mode = str(fb_runtime.get("api_mode") or "chat_completions")
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
 
         if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
@@ -2648,10 +2691,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # the stale value from the previous model.  See #22387.
         agent._config_context_length = None
         agent.model = fb_model
-        agent.provider = fb_provider
-        agent.requested_provider = fb_provider
+        agent.provider = resolved_fb_provider
+        agent.requested_provider = resolved_fb_requested_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
+        agent.request_overrides = fb_request_overrides
         # Per-provider reasoning_content echo opt-in (see _reasoning_echo_opt_in).
         # Read from the fallback entry so the flag travels with the active
         # provider; restore_primary_runtime will revert it from the snapshot.
@@ -2701,24 +2745,25 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # Honor per-provider / per-model request_timeout_seconds for the
         # fallback target (same knob the primary client uses).  None = use
         # SDK default.
-        _fb_timeout = get_provider_request_timeout(fb_provider, fb_model)
+        _fb_timeout = get_provider_request_timeout(resolved_fb_provider, fb_model)
+        resolved_fb_api_key = fb_runtime.get("api_key") or fb_client.api_key
 
         if fb_api_mode == "anthropic_messages":
             # Build native Anthropic client instead of using OpenAI client
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
-            effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
+            effective_key = (resolved_fb_api_key or resolve_anthropic_token() or "") if resolved_fb_provider == "anthropic" else (resolved_fb_api_key or "")
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = fb_base_url
             agent._anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url, timeout=_fb_timeout,
             )
-            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
+            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if resolved_fb_provider == "anthropic" else False
             agent.client = None
             agent._client_kwargs = {}
         else:
             # Swap OpenAI client and config in-place
-            agent.api_key = fb_client.api_key
+            agent.api_key = resolved_fb_api_key
             agent.client = fb_client
             # Preserve provider-specific headers that
             # resolve_provider_client() may have baked into
@@ -2732,7 +2777,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             if not fb_headers:
                 fb_headers = getattr(fb_client, "default_headers", None)
             agent._client_kwargs = {
-                "api_key": fb_client.api_key,
+                "api_key": resolved_fb_api_key,
                 "base_url": fb_base_url,
                 **({"default_headers": dict(fb_headers)} if fb_headers else {}),
             }
@@ -2749,7 +2794,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # Re-evaluate prompt caching for the new provider/model
         agent._use_prompt_caching, agent._use_native_cache_layout = (
             agent._anthropic_prompt_cache_policy(
-                provider=fb_provider,
+                provider=resolved_fb_provider,
                 base_url=fb_base_url,
                 api_mode=fb_api_mode,
                 model=fb_model,

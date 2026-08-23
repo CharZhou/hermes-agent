@@ -10,6 +10,7 @@ class _FakeAgent:
         self.calls = []
         self.model = "old/model"
         self.provider = "openrouter"
+        self.request_overrides = {"extra_body": {"source_only": True}}
 
     def switch_model(self, **kwargs):
         self.calls.append(kwargs)
@@ -70,6 +71,7 @@ def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):
             api_key="sk-ant",
             base_url="https://api.anthropic.com",
             api_mode="anthropic_messages",
+            request_overrides={"extra_body": {"target_only": True}},
             provider_label="Anthropic",
         ),
     )
@@ -83,7 +85,13 @@ def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):
     assert stub.model == "claude-sonnet-4.6"
     assert stub.provider == "anthropic"
     assert stub.agent.calls[-1]["new_model"] == "claude-sonnet-4.6"
+    assert stub.agent.calls[-1]["request_overrides"] == {
+        "extra_body": {"target_only": True}
+    }
     assert stub._pending_one_turn_model_restore["model"] == "old/model"
+    assert stub._pending_one_turn_model_restore["request_overrides"] == {
+        "extra_body": {"source_only": True}
+    }
     assert "next turn only" in printed[-1]
 
 
@@ -101,6 +109,7 @@ def test_cli_restore_model_runtime_snapshot_restores_agent():
         "base_url": "https://openrouter.ai/api/v1",
         "explicit_base_url": "https://openrouter.ai/api/v1",
         "api_mode": "chat_completions",
+        "request_overrides": {"extra_body": {"source_only": True}},
     }
 
     cli_mod.HermesCLI._restore_model_runtime_snapshot(stub, snapshot)
@@ -108,6 +117,9 @@ def test_cli_restore_model_runtime_snapshot_restores_agent():
     assert stub.model == "old/model"
     assert stub.provider == "openrouter"
     assert stub.agent.calls[-1]["new_model"] == "old/model"
+    assert stub.agent.calls[-1]["request_overrides"] == {
+        "extra_body": {"source_only": True}
+    }
 
 
 def test_cli_restore_model_runtime_prefers_primary_runtime():

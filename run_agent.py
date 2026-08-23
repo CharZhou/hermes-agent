@@ -884,10 +884,26 @@ class AIAgent:
             return_load_result=True,
         )
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(
+        self,
+        new_model,
+        new_provider,
+        api_key='',
+        base_url='',
+        api_mode='',
+        request_overrides=None,
+    ):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
-        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
+        return switch_model(
+            self,
+            new_model,
+            new_provider,
+            api_key,
+            base_url,
+            api_mode,
+            request_overrides=request_overrides,
+        )
 
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
@@ -8518,6 +8534,7 @@ class AIAgent:
             start_task_run,
         )
         from agent.subagent_lifecycle import bind_subagent_parent
+        from gateway.session_context import scoped_session_platform
         effective_task_id = task_id or str(uuid.uuid4())
         session_id = str(getattr(self, "session_id", None) or "")
         task_context = {
@@ -8848,7 +8865,11 @@ class AIAgent:
             # replaces the value with the live runtime after fallback restoration.
             # Keep the scope local instead of storing ContextVar tokens on the agent,
             # which may be observed from another thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}):
+            with (
+                scoped_session_platform(task_context["platform"]),
+                bind_subagent_parent(self),
+                scoped_runtime_main({}),
+            ):
                 try:
                     if durable_turn_lease_thread is not None:
                         with durable_turn_lease_activity_lock:

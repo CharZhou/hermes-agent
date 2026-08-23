@@ -460,6 +460,50 @@ def test_picker_selection_resolves_named_custom_provider_model_id(monkeypatch):
     assert result.new_model == "deepseek-v4-flash"
 
 
+def test_switch_model_named_custom_provider_preserves_request_overrides(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "test-key",
+            "base_url": "https://example.test/v1",
+            "api_mode": "chat_completions",
+            "request_overrides": {
+                "extra_body": {"text": {"verbosity": "low"}},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *args, **kwargs: _MOCK_VALIDATION,
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities",
+        lambda *a, **k: None,
+    )
+
+    result = switch_model(
+        raw_input="edge-model",
+        current_provider="openrouter",
+        current_model="global-model",
+        explicit_provider="custom:edge",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Edge",
+                "base_url": "https://example.test/v1",
+                "model": "edge-model",
+                "extra_body": {"text": {"verbosity": "low"}},
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.request_overrides == {
+        "extra_body": {"text": {"verbosity": "low"}},
+    }
+
+
 
 
 

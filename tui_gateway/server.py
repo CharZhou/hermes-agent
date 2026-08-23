@@ -3475,6 +3475,7 @@ def _set_session_context(
                         )
                     break
         return set_session_vars(
+            platform=source,
             session_key=session_key,
             session_id=session_id,
             source=source,
@@ -4031,28 +4032,7 @@ def _resolve_model() -> str:
 
 
 def _resolve_session_platform() -> str:
-    """Resolve the platform tag for a tui_gateway-routed session.
-
-    The desktop app's chat panel and the standalone TUI both speak to this
-    gateway; without a branch they all get stamped ``platform="tui"``,
-    which makes the agent think it's talking to a terminal user. That
-    mis-tag is the root cause of the desktop chat agent suggesting
-    TUI-only slash commands (``/reload-mcp``, …) to chat-panel users.
-
-    Resolution:
-      * ``HERMES_DESKTOP=1`` and ``HERMES_DESKTOP_TERMINAL`` unset → "desktop"
-        (the chat-panel backend — a graphical React surface, not a terminal).
-      * ``HERMES_DESKTOP_TERMINAL=1`` → "tui"
-        (``hermes --tui`` running in the desktop's embedded terminal pane;
-        it IS a TUI, just embedded. The clarifier attached to the tui hint
-        in system_prompt.py tells the agent about the embedding.)
-      * neither set → "tui"
-        (standalone ``hermes --tui``.)
-    """
-    if is_truthy_value(os.environ.get("HERMES_DESKTOP")) and not is_truthy_value(
-        os.environ.get("HERMES_DESKTOP_TERMINAL")
-    ):
-        return "desktop"
+    """Return the fallback for clients that omit their session source."""
     return "tui"
 
 
@@ -4061,8 +4041,7 @@ def _resolve_session_source(explicit: str | None) -> str:
 
     A caller that explicitly passes ``source`` (e.g. a plugin session tagged
     ``"telegram"``) keeps its value. Only an empty/None ``source`` falls back
-    to the env-resolved platform — so env-driven resolution never silently
-    rewrites a caller's intent.
+    to the standalone TUI.
     """
     if explicit:
         return explicit
@@ -4899,6 +4878,7 @@ def _snapshot_agent_model_runtime(agent) -> dict:
         "api_key": getattr(agent, "api_key", ""),
         "base_url": getattr(agent, "base_url", ""),
         "api_mode": getattr(agent, "api_mode", ""),
+        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
     }
 
@@ -4924,6 +4904,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             api_key=snapshot.get("api_key", ""),
             base_url=snapshot.get("base_url", ""),
             api_mode=snapshot.get("api_mode", ""),
+            request_overrides=snapshot.get("request_overrides"),
         )
 
 
@@ -5084,6 +5065,7 @@ def _apply_model_switch(
                 api_key=result.api_key,
                 base_url=result.base_url,
                 api_mode=result.api_mode,
+                request_overrides=getattr(result, "request_overrides", None),
             )
         except Exception as exc:
             # The in-place swap rolled the agent back to the old working
@@ -5130,6 +5112,9 @@ def _apply_model_switch(
             "base_url": result.base_url,
             "api_key": result.api_key,
             "api_mode": result.api_mode,
+            "request_overrides": dict(
+                getattr(result, "request_overrides", {}) or {}
+            ),
         }
     if persist_global:
         _persist_model_switch(result)
@@ -7128,6 +7113,7 @@ def _make_agent(
         override_base_url = model_override.get("base_url")
         override_api_key = model_override.get("api_key")
         override_api_mode = model_override.get("api_mode")
+        override_request_overrides = model_override.get("request_overrides")
         resolve_kwargs = {}
         if str(requested_provider or "").strip().lower() == "custom":
             # Session rows persisted before the custom-provider identity fix
@@ -7170,6 +7156,8 @@ def _make_agent(
                 runtime["api_key"] = override_api_key
             if override_api_mode:
                 runtime["api_mode"] = override_api_mode
+            if isinstance(override_request_overrides, dict):
+                runtime["request_overrides"] = dict(override_request_overrides)
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:
@@ -7212,6 +7200,7 @@ def _make_agent(
             if service_tier_override is not None
             else _load_service_tier()
         ),
+        request_overrides=runtime.get("request_overrides"),
         enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
