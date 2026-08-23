@@ -6,12 +6,9 @@ on it — even though the user is in a graphical chat surface, not a
 terminal. That mis-tag is why the agent suggested TUI-only slash commands
 (like ``/reload-mcp``) to desktop chat users.
 
-These tests pin the env-var matrix that resolves the session platform at
-``tui_gateway`` session-creation time:
-
-  HERMES_DESKTOP=1, HERMES_DESKTOP_TERMINAL unset  -> platform="desktop"
-  HERMES_DESKTOP=1, HERMES_DESKTOP_TERMINAL=1     -> platform="tui"  (embedded pane)
-  neither set                                      -> platform="tui"  (standalone)
+These tests pin the session-owned source contract. A client-supplied source is
+authoritative; missing source always means the standalone TUI regardless of
+process environment.
 
 The resolver helper is import-safe (no heavy module side effects) so it
 can be unit-tested without spinning up the full gateway.
@@ -44,21 +41,8 @@ class TestResolveSessionPlatform:
         _srv = _reload_resolver()
         assert _srv._resolve_session_platform() == "tui"
 
-    def test_desktop_chat_backend_gets_desktop_tag(self, clean_env):
+    def test_desktop_process_env_does_not_change_missing_source(self, clean_env):
         clean_env.setenv("HERMES_DESKTOP", "1")
-        _srv = _reload_resolver()
-        assert _srv._resolve_session_platform() == "desktop"
-
-
-    @pytest.mark.parametrize("val", ["1", "true", "yes", "on", "TRUE", "Yes", "ON"])
-    def test_truthy_variants_recognized(self, clean_env, val):
-        clean_env.setenv("HERMES_DESKTOP", val)
-        _srv = _reload_resolver()
-        assert _srv._resolve_session_platform() == "desktop"
-
-    @pytest.mark.parametrize("val", ["0", "false", "", "no", "off", "False"])
-    def test_falsy_variants_fall_back_to_tui(self, clean_env, val):
-        clean_env.setenv("HERMES_DESKTOP", val)
         _srv = _reload_resolver()
         assert _srv._resolve_session_platform() == "tui"
 
@@ -83,11 +67,14 @@ class TestResolveSessionSource:
 
 
 class TestResolveAgentPlatform:
-
-    def test_missing_source_falls_back_to_env_resolved_platform(self, clean_env):
+    def test_missing_source_defaults_to_tui_even_in_desktop_process(self, clean_env):
         clean_env.setenv("HERMES_DESKTOP", "1")
         _srv = _reload_resolver()
-        assert _srv._resolve_agent_platform(None) == "desktop"
+        assert _srv._resolve_agent_platform(None) == "tui"
+
+    def test_explicit_desktop_source_is_authoritative(self, clean_env):
+        _srv = _reload_resolver()
+        assert _srv._resolve_agent_platform("desktop") == "desktop"
 
 
 class TestSessionSourceFallback:
@@ -95,5 +82,4 @@ class TestSessionSourceFallback:
         clean_env.setenv("HERMES_DESKTOP", "1")
         _srv = _reload_resolver()
         assert _srv._session_source({"source": "telegram"}) == "telegram"
-
 

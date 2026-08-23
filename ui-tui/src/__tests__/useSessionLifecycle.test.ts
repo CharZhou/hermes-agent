@@ -1,7 +1,10 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 
+import { renderSync } from '@hermes/ink'
+import React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { turnController } from '../app/turnController.js'
@@ -14,6 +17,89 @@ import {
   signalFreshSessionBoundary,
   writeActiveSessionFile
 } from '../app/useSessionLifecycle.js'
+import { useSessionLifecycle } from '../app/useSessionLifecycle.js'
+
+const mountSessionLifecycle = (rpc: ReturnType<typeof vi.fn>, request: ReturnType<typeof vi.fn>) => {
+  const exposed: { current: null | ReturnType<typeof useSessionLifecycle> } = { current: null }
+
+  function Harness() {
+    exposed.current = useSessionLifecycle({
+      colsRef: { current: 91 },
+      composerActions: { setComposerTokens: vi.fn() } as never,
+      gw: { request } as never,
+      panel: vi.fn(),
+      rpc: rpc as never,
+      scrollRef: { current: null },
+      setHistoryItems: vi.fn(),
+      setLastUserMsg: vi.fn(),
+      setSessionStartedAt: vi.fn(),
+      setStickyPrompt: vi.fn(),
+      setVoiceProcessing: vi.fn(),
+      setVoiceRecording: vi.fn(),
+      sys: vi.fn()
+    })
+
+    return null
+  }
+
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+  Object.assign(stdout, { columns: 91, isTTY: false, rows: 24 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', () => {})
+
+  const instance = renderSync(React.createElement(Harness), {
+    patchConsole: false,
+    stderr: stderr as NodeJS.WriteStream,
+    stdin: stdin as NodeJS.ReadStream,
+    stdout: stdout as NodeJS.WriteStream
+  })
+
+  return { exposed, instance }
+}
+
+describe('TUI session source', () => {
+  it('sends source=tui when creating and resuming sessions', async () => {
+    const rpc = vi.fn(async (method: string) => {
+      if (method === 'setup.status') {
+        return { provider_configured: true }
+      }
+
+      if (method === 'session.create') {
+        return { session_id: 'runtime-new' }
+      }
+
+      return null
+    })
+
+    const request = vi.fn(async (method: string) =>
+      method === 'session.resume'
+        ? { messages: [], resumed: 'stored-old', session_id: 'runtime-old', status: 'idle' }
+        : null
+    )
+
+    const { exposed, instance } = mountSessionLifecycle(rpc, request)
+
+    try {
+      await exposed.current!.newLiveSession()
+      exposed.current!.resumeById('stored-old')
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(rpc).toHaveBeenCalledWith('session.create', { cols: 91, source: 'tui' })
+      expect(request).toHaveBeenCalledWith('session.resume', {
+        cols: 91,
+        session_id: 'stored-old',
+        source: 'tui'
+      })
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
+  })
+})
 
 describe('fresh session boundary', () => {
   it('signals only when a live session is replaced by a different session', () => {

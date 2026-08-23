@@ -29,6 +29,7 @@ mcp_servers:
     timeout: 120
     connect_timeout: 60
     supports_parallel_tool_calls: false
+    forward_hermes_context: false
     tools:
       include: []
       exclude: []
@@ -49,10 +50,25 @@ mcp_servers:
 | `timeout` | number | 两者 | 工具调用超时时间 |
 | `connect_timeout` | number | 两者 | 初始连接超时时间 |
 | `supports_parallel_tool_calls` | bool | 两者 | 允许该服务器的工具并发执行 |
+| `forward_hermes_context` | bool-like | 两者 | 在 MCP 请求元数据中透传 Hermes 运行/会话上下文（默认 `false`；仅对可信服务器启用） |
 | `tools` | mapping | 两者 | 过滤及工具策略 |
 | `auth` | string | HTTP | 认证方式。设为 `oauth` 可启用带 PKCE 的 OAuth 2.1 |
 | `sampling` | mapping | 两者 | 服务器发起的 LLM 请求策略（参见 MCP 指南） |
 | `trust` | string | 两者 | 信任层级：`full`（默认）或 `untrusted`。在 `untrusted` 服务器上，所有具备写能力的工具调用（即没有 `readOnlyHint: true` 注解的工具）在执行前都需要通过标准审批界面获得用户批准。`readOnlyHint` 是服务器自报的*提示* —— 恶意服务器最多只能让自称只读的工具跳过审批，绝不会因此获得额外权限，因此对不完全受控的服务器请标记为 `untrusted`。无法识别的值按 `untrusted` 处理（失败即关闭） |
+
+## Hermes 上下文透传
+
+当可信 MCP 服务器需要识别请求来自哪个 Hermes 运行、会话和工具调用时，
+可在该服务器配置中设置 `forward_hermes_context: true`。Hermes 会把当前可用的
+非空值放入标准 MCP 请求元数据 `_meta["io.nous.hermes/context"]`：
+
+- `run_id`、`task_id`、`session_id`、`session_key`
+- `tool_call_id`、`turn_id`、`api_request_id`
+- `platform`
+
+该命名空间还包含 `version: "1"`。这些值不会写入 MCP 工具的普通 `arguments`，
+也不会进入模型可见的工具 schema。此配置默认关闭，未显式启用的服务器保持原有
+请求形状。
 
 ## `tools` 策略键
 

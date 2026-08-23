@@ -13,6 +13,8 @@ stale value and its ``echo $HERMES_SESSION_ID`` reported a FOREIGN session's id
 The fix strips the per-session bridged vars (HERMES_SESSION_* / UI /
 CRON_AUTO_DELIVER_) from the snapshot at both dump sites in
 ``tools/environments/base.py``; they are re-injected fresh on every command.
+``HERMES_RUN_ID`` is a turn-scoped sibling outside the ``HERMES_SESSION_*``
+prefix and must receive the same treatment.
 """
 
 import os
@@ -51,6 +53,7 @@ def test_export_snippet_shape():
     assert "${!HERMES_CRON_AUTO_DELIVER_*}" in snippet
     assert "${!HERMES_BROWSER_CONTROL_*}" in snippet
     assert "HERMES_UI_SESSION_ID" in snippet
+    assert "HERMES_RUN_ID" in snippet
     assert "grep -vE" not in snippet
     assert '"$__hermes_snap_tmp"' in snippet
     # The redirection must be attached to a brace group wrapping the dump,
@@ -78,32 +81,44 @@ def test_shared_snapshot_no_cross_session_leak(tmp_path):
     env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
     env.init_session()
     try:
-        def run_as(sid):
+        def run_as(sid, run_id):
             out = {}
 
             def worker():
                 for v in _VAR_MAP.values():
                     v.set(_UNSET)
-                set_session_vars(session_key="k" + sid, session_id=sid, source="desktop")
-                out["r"] = env.execute('echo "[$HERMES_SESSION_ID]"')
+                set_session_vars(
+                    session_key="k" + sid,
+                    session_id=sid,
+                    source="desktop",
+                    run_id=run_id,
+                )
+                out["r"] = env.execute(
+                    'echo "[$HERMES_SESSION_ID][$HERMES_RUN_ID]"'
+                )
 
             t = threading.Thread(target=worker)
             t.start()
             t.join()
             return out["r"].get("output", "")
 
-        out_a = run_as("SIDAAA")
-        out_b = run_as("SIDBBB")
+        out_a = run_as("SIDAAA", "RUNAAA")
+        out_b = run_as("SIDBBB", "RUNBBB")
 
         assert "SIDAAA" in out_a, f"session A saw {out_a!r}"
         # The core assertion: B must see its OWN id, not A's leaked via snapshot.
         assert "SIDBBB" in out_b, f"session B saw {out_b!r}"
         assert "SIDAAA" not in out_b, f"session B leaked A's id: {out_b!r}"
+        assert "RUNAAA" in out_a, f"run A saw {out_a!r}"
+        assert "RUNBBB" in out_b, f"run B saw {out_b!r}"
+        assert "RUNAAA" not in out_b, f"run B restored A's id: {out_b!r}"
 
         # And the snapshot file must not carry the session id at all.
         snap = env._snapshot_path
         if os.path.exists(snap):
             with open(snap) as f:
-                assert "HERMES_SESSION_ID" not in f.read()
+                snapshot = f.read()
+                assert "HERMES_SESSION_ID" not in snapshot
+                assert "HERMES_RUN_ID" not in snapshot
     finally:
         env.cleanup()

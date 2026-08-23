@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def _make_registry(captured: dict):
     """Return a mock registry whose dispatch records the kwargs it receives."""
@@ -17,6 +19,35 @@ def _make_registry(captured: dict):
 
 
 class TestSessionIdForwarding:
+
+    @pytest.mark.parametrize(
+        ("tool_name", "args"),
+        [
+            ("web_search", {"query": "test"}),
+            ("execute_code", {"code": "print(1)"}),
+        ],
+    )
+    def test_call_context_fields_reach_registry_dispatch(self, tool_name, args):
+        captured = {}
+        with patch("model_tools.registry", _make_registry(captured)):
+            from model_tools import handle_function_call
+
+            handle_function_call(
+                tool_name,
+                args,
+                task_id="task-A",
+                tool_call_id="call-A",
+                session_id="session-A",
+                turn_id="turn-A",
+                api_request_id="request-A",
+                skip_pre_tool_call_hook=True,
+            )
+
+        assert captured["task_id"] == "task-A"
+        assert captured["tool_call_id"] == "call-A"
+        assert captured["session_id"] == "session-A"
+        assert captured["turn_id"] == "turn-A"
+        assert captured["api_request_id"] == "request-A"
 
     def test_standard_path_forwards_session_id(self):
         """registry.dispatch receives session_id on the normal tool path."""

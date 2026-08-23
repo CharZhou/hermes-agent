@@ -200,7 +200,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         await closeSession(previousSid)
       }
 
-      const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+      const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current, source: 'tui' })
 
       if (!r) {
         patchUiState({ status: 'ready' })
@@ -341,7 +341,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
+        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id, source: 'tui' })
           .then(raw => {
             const r = asRpcResult<SessionResumeResponse>(raw)
 

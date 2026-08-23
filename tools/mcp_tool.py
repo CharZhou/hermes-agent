@@ -5743,6 +5743,29 @@ def _mark_server_call_started(server: Any) -> None:
         mark_tool_call()
 
 
+_HERMES_CONTEXT_META_KEY = "io.nous.hermes/context"
+_HERMES_CONTEXT_FIELDS = (
+    "run_id",
+    "task_id",
+    "session_id",
+    "session_key",
+    "tool_call_id",
+    "turn_id",
+    "api_request_id",
+    "platform",
+)
+
+
+def _build_hermes_context_meta(**fields: Any) -> Dict[str, Dict[str, str]]:
+    """Build the namespaced MCP metadata payload from real string values."""
+    context = {"version": "1"}
+    for field in _HERMES_CONTEXT_FIELDS:
+        value = fields.get(field)
+        if isinstance(value, str) and value:
+            context[field] = value
+    return {_HERMES_CONTEXT_META_KEY: context}
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -5818,6 +5841,32 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
                 return tool_error(f"MCP server '{server_name}' is not connected")
 
+        context_meta = None
+        server_config = getattr(server, "_config", {}) or {}
+        if _parse_boolish(
+            server_config.get("forward_hermes_context", False),
+            default=False,
+        ):
+            from gateway.session_context import get_session_env
+
+            context_meta = _build_hermes_context_meta(
+                run_id=get_session_env("HERMES_RUN_ID"),
+                task_id=kwargs.get("task_id"),
+                session_id=(
+                    kwargs.get("session_id")
+                    or get_session_env("HERMES_SESSION_ID")
+                ),
+                session_key=get_session_env("HERMES_SESSION_KEY"),
+                tool_call_id=kwargs.get("tool_call_id"),
+                turn_id=kwargs.get("turn_id"),
+                api_request_id=kwargs.get("api_request_id"),
+                platform=get_session_env("HERMES_SESSION_PLATFORM"),
+            )
+
+        call_kwargs: Dict[str, Any] = {"arguments": args}
+        if context_meta is not None:
+            call_kwargs["meta"] = context_meta
+
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
@@ -5827,7 +5876,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    result = await server.session.call_tool(tool_name, **call_kwargs)
                 finally:
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably
