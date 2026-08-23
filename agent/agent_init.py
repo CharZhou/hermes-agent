@@ -589,12 +589,6 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
     requested_provider: str = None,
-    responses_transport: str = "sse",
-    responses_ws_url: str = None,
-    responses_ws_state: bool = False,
-    responses_ws_ping_interval_seconds: float = 30.0,
-    responses_ws_ping_timeout_seconds: float = 90.0,
-    responses_transport_provider: str = None,
 ):
     """
     Initialize the AI Agent.
@@ -694,37 +688,6 @@ def init_agent(
         if isinstance(requested_provider, str) and requested_provider.strip()
         else agent.provider
     )
-    from agent.codex_responses_ws_transport import (
-        DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS,
-        DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS,
-        normalize_responses_transport,
-        normalize_responses_ws_keepalive_seconds,
-    )
-
-    agent.responses_transport = normalize_responses_transport(responses_transport)
-    agent.responses_ws_url = (
-        responses_ws_url.strip()
-        if isinstance(responses_ws_url, str) and responses_ws_url.strip()
-        else None
-    )
-    agent.responses_ws_state = bool(responses_ws_state)
-    agent.responses_ws_ping_interval_seconds = normalize_responses_ws_keepalive_seconds(
-        responses_ws_ping_interval_seconds,
-        default=DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS,
-    )
-    agent.responses_ws_ping_timeout_seconds = normalize_responses_ws_keepalive_seconds(
-        responses_ws_ping_timeout_seconds,
-        default=DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS,
-    )
-    agent.responses_transport_provider = (
-        responses_transport_provider.strip().lower()
-        if isinstance(responses_transport_provider, str)
-        and responses_transport_provider.strip()
-        else None
-    )
-    agent._generic_ws_auto_disabled_for = None
-    agent._codex_responses_ws_session = None
-    agent._codex_responses_ws_session_identity = None
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
@@ -3081,12 +3044,6 @@ def init_agent(
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
-        "responses_transport": agent.responses_transport,
-        "responses_ws_url": agent.responses_ws_url,
-        "responses_ws_state": bool(agent.responses_ws_state),
-        "responses_ws_ping_interval_seconds": agent.responses_ws_ping_interval_seconds,
-        "responses_ws_ping_timeout_seconds": agent.responses_ws_ping_timeout_seconds,
-        "responses_transport_provider": agent.responses_transport_provider,
         "request_overrides": dict(agent.request_overrides or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,

@@ -92,16 +92,6 @@ class CLIAgentSetupMixin:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
-        resolved_responses_transport = runtime.get("responses_transport", "sse")
-        resolved_responses_ws_url = runtime.get("responses_ws_url")
-        resolved_responses_ws_state = bool(runtime.get("responses_ws_state", False))
-        resolved_responses_ws_ping_interval_seconds = runtime.get(
-            "responses_ws_ping_interval_seconds", 30.0
-        )
-        resolved_responses_ws_ping_timeout_seconds = runtime.get(
-            "responses_ws_ping_timeout_seconds", 90.0
-        )
-        resolved_responses_transport_provider = runtime.get("responses_transport_provider")
         # A callable api_key is a bearer-token provider (Azure Foundry
         # Entra ID — ``azure_identity_adapter.build_token_provider``).
         # The OpenAI SDK accepts ``Callable[[], str]`` for ``api_key`` and
@@ -146,35 +136,11 @@ class CLIAgentSetupMixin:
             or resolved_api_mode != self.api_mode
             or resolved_acp_command != self.acp_command
             or resolved_acp_args != self.acp_args
-            or resolved_responses_transport != getattr(self, "responses_transport", "sse")
-            or resolved_responses_ws_url != getattr(self, "responses_ws_url", None)
-            or resolved_responses_ws_state != getattr(self, "responses_ws_state", False)
-            or resolved_responses_ws_ping_interval_seconds
-            != getattr(self, "responses_ws_ping_interval_seconds", 30.0)
-            or resolved_responses_ws_ping_timeout_seconds
-            != getattr(self, "responses_ws_ping_timeout_seconds", 90.0)
-            or resolved_responses_transport_provider
-            != getattr(self, "responses_transport_provider", None)
         )
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
-        self.responses_transport = resolved_responses_transport
-        self.responses_ws_url = resolved_responses_ws_url
-        self.responses_ws_state = resolved_responses_ws_state
-        self.responses_ws_ping_interval_seconds = resolved_responses_ws_ping_interval_seconds
-        self.responses_ws_ping_timeout_seconds = resolved_responses_ws_ping_timeout_seconds
-        self.responses_transport_provider = resolved_responses_transport_provider
-        # Transport/provider/base/ws_url changes invalidate sticky auto-SSE disable.
-        if routing_changed or credentials_changed:
-            self._generic_ws_auto_disabled_for = None
-            agent = getattr(self, "agent", None)
-            if agent is not None:
-                try:
-                    agent._generic_ws_auto_disabled_for = None
-                except Exception:
-                    pass
         self._credential_pool = resolved_credential_pool
         self._provider_source = runtime.get("source")
         self.api_key = api_key
@@ -340,18 +306,6 @@ class CLIAgentSetupMixin:
                 self, "requested_provider", self.provider
             ),
             "api_mode": self.api_mode,
-            "responses_transport": getattr(self, "responses_transport", "sse"),
-            "responses_ws_url": getattr(self, "responses_ws_url", None),
-            "responses_ws_state": bool(getattr(self, "responses_ws_state", False)),
-            "responses_ws_ping_interval_seconds": getattr(
-                self, "responses_ws_ping_interval_seconds", 30.0
-            ),
-            "responses_ws_ping_timeout_seconds": getattr(
-                self, "responses_ws_ping_timeout_seconds", 90.0
-            ),
-            "responses_transport_provider": getattr(
-                self, "responses_transport_provider", None,
-            ),
             "command": self.acp_command,
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
@@ -365,12 +319,6 @@ class CLIAgentSetupMixin:
                 runtime["requested_provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
-                runtime["responses_transport"],
-                runtime["responses_ws_url"],
-                runtime["responses_ws_state"],
-                runtime["responses_ws_ping_interval_seconds"],
-                runtime["responses_ws_ping_timeout_seconds"],
-                runtime["responses_transport_provider"],
                 runtime["command"],
                 tuple(runtime["args"]),
             ),
@@ -535,18 +483,6 @@ class CLIAgentSetupMixin:
                     self, "requested_provider", self.provider
                 ),
                 "api_mode": self.api_mode,
-                "responses_transport": getattr(self, "responses_transport", "sse"),
-                "responses_ws_url": getattr(self, "responses_ws_url", None),
-                "responses_ws_state": bool(getattr(self, "responses_ws_state", False)),
-                "responses_ws_ping_interval_seconds": getattr(
-                    self, "responses_ws_ping_interval_seconds", 30.0
-                ),
-                "responses_ws_ping_timeout_seconds": getattr(
-                    self, "responses_ws_ping_timeout_seconds", 90.0
-                ),
-                "responses_transport_provider": getattr(
-                    self, "responses_transport_provider", None,
-                ),
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
@@ -559,16 +495,6 @@ class CLIAgentSetupMixin:
                 provider=runtime.get("provider"),
                 requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"),
-                responses_transport=runtime.get("responses_transport", "sse"),
-                responses_ws_url=runtime.get("responses_ws_url"),
-                responses_ws_state=runtime.get("responses_ws_state", False),
-                responses_ws_ping_interval_seconds=runtime.get(
-                    "responses_ws_ping_interval_seconds", 30.0
-                ),
-                responses_ws_ping_timeout_seconds=runtime.get(
-                    "responses_ws_ping_timeout_seconds", 90.0
-                ),
-                responses_transport_provider=runtime.get("responses_transport_provider"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
@@ -646,12 +572,6 @@ class CLIAgentSetupMixin:
                 runtime.get("requested_provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
-                runtime.get("responses_transport", "sse"),
-                runtime.get("responses_ws_url"),
-                runtime.get("responses_ws_state", False),
-                runtime.get("responses_ws_ping_interval_seconds", 30.0),
-                runtime.get("responses_ws_ping_timeout_seconds", 90.0),
-                runtime.get("responses_transport_provider"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
             )

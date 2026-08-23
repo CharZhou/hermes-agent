@@ -652,16 +652,6 @@ class SessionManager:
                     "api_mode": api_mode or runtime.get("api_mode"),
                     "base_url": base_url or runtime.get("base_url"),
                     "api_key": runtime.get("api_key"),
-                    "responses_transport": runtime.get("responses_transport", "sse"),
-                    "responses_ws_url": runtime.get("responses_ws_url"),
-                    "responses_ws_state": runtime.get("responses_ws_state", False),
-                    "responses_ws_ping_interval_seconds": runtime.get(
-                        "responses_ws_ping_interval_seconds", 30.0
-                    ),
-                    "responses_ws_ping_timeout_seconds": runtime.get(
-                        "responses_ws_ping_timeout_seconds", 90.0
-                    ),
-                    "responses_transport_provider": runtime.get("responses_transport_provider"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                 }

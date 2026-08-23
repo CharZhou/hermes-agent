@@ -27,10 +27,6 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
-from agent.codex_responses_ws_transport import (
-    GenericWsRejectedError,
-    GenericWsStartedError,
-)
 from agent.conversation_compression import (
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
@@ -4704,10 +4700,6 @@ def run_conversation(
                     getattr(agent, "_vision_supported", True)
                     and _looks_like_image_rejection
                     and _status_ok
-                    and not isinstance(
-                        api_error,
-                        (GenericWsStartedError, GenericWsRejectedError),
-                    )
                 ):
                     agent._vision_supported = False
                     _imgs_removed = _strip_images_from_messages(messages)

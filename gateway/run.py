@@ -2875,16 +2875,6 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "provider": runtime.get("provider"),
         "requested_provider": runtime.get("requested_provider"),
         "api_mode": runtime.get("api_mode"),
-        "responses_transport": runtime.get("responses_transport", "sse"),
-        "responses_ws_url": runtime.get("responses_ws_url"),
-        "responses_ws_state": runtime.get("responses_ws_state", False),
-        "responses_ws_ping_interval_seconds": runtime.get(
-            "responses_ws_ping_interval_seconds", 30.0
-        ),
-        "responses_ws_ping_timeout_seconds": runtime.get(
-            "responses_ws_ping_timeout_seconds", 90.0
-        ),
-        "responses_transport_provider": runtime.get("responses_transport_provider"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
@@ -3035,16 +3025,6 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "provider": runtime.get("provider"),
         "requested_provider": runtime.get("requested_provider"),
         "api_mode": runtime.get("api_mode"),
-        "responses_transport": runtime.get("responses_transport", "sse"),
-        "responses_ws_url": runtime.get("responses_ws_url"),
-        "responses_ws_state": runtime.get("responses_ws_state", False),
-        "responses_ws_ping_interval_seconds": runtime.get(
-            "responses_ws_ping_interval_seconds", 30.0
-        ),
-        "responses_ws_ping_timeout_seconds": runtime.get(
-            "responses_ws_ping_timeout_seconds", 90.0
-        ),
-        "responses_transport_provider": runtime.get("responses_transport_provider"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
@@ -3104,16 +3084,6 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "provider": runtime.get("provider"),
                     "requested_provider": runtime.get("requested_provider"),
                     "api_mode": runtime.get("api_mode"),
-                    "responses_transport": runtime.get("responses_transport", "sse"),
-                    "responses_ws_url": runtime.get("responses_ws_url"),
-                    "responses_ws_state": runtime.get("responses_ws_state", False),
-                    "responses_ws_ping_interval_seconds": runtime.get(
-                        "responses_ws_ping_interval_seconds", 30.0
-                    ),
-                    "responses_ws_ping_timeout_seconds": runtime.get(
-                        "responses_ws_ping_timeout_seconds", 90.0
-                    ),
-                    "responses_transport_provider": runtime.get("responses_transport_provider"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
@@ -8127,16 +8097,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "api_key": override.get("api_key"),
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
-                "responses_transport": override.get("responses_transport", "sse"),
-                "responses_ws_url": override.get("responses_ws_url"),
-                "responses_ws_state": override.get("responses_ws_state", False),
-                "responses_ws_ping_interval_seconds": override.get(
-                    "responses_ws_ping_interval_seconds", 30.0
-                ),
-                "responses_ws_ping_timeout_seconds": override.get(
-                    "responses_ws_ping_timeout_seconds", 90.0
-                ),
-                "responses_transport_provider": override.get("responses_transport_provider"),
                 "max_tokens": override.get("max_tokens"),
                 "credential_pool": override.get("credential_pool"),
                 "request_overrides": dict(
@@ -8286,16 +8246,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "provider": runtime_kwargs.get("provider"),
             "requested_provider": runtime_kwargs.get("requested_provider"),
             "api_mode": runtime_kwargs.get("api_mode"),
-            "responses_transport": runtime_kwargs.get("responses_transport", "sse"),
-            "responses_ws_url": runtime_kwargs.get("responses_ws_url"),
-            "responses_ws_state": runtime_kwargs.get("responses_ws_state", False),
-            "responses_ws_ping_interval_seconds": runtime_kwargs.get(
-                "responses_ws_ping_interval_seconds", 30.0
-            ),
-            "responses_ws_ping_timeout_seconds": runtime_kwargs.get(
-                "responses_ws_ping_timeout_seconds", 90.0
-            ),
-            "responses_transport_provider": runtime_kwargs.get("responses_transport_provider"),
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
@@ -8313,12 +8263,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime["requested_provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
-                runtime["responses_transport"],
-                runtime["responses_ws_url"],
-                runtime["responses_ws_state"],
-                runtime["responses_ws_ping_interval_seconds"],
-                runtime["responses_ws_ping_timeout_seconds"],
-                runtime["responses_transport_provider"],
                 runtime["command"],
                 tuple(runtime["args"]),
             ),
@@ -26529,12 +26473,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime.get("provider", ""),
                 runtime.get("requested_provider", ""),
                 runtime.get("api_mode", ""),
-                runtime.get("responses_transport", "sse"),
-                runtime.get("responses_ws_url", ""),
-                runtime.get("responses_ws_state", False),
-                runtime.get("responses_ws_ping_interval_seconds", 30.0),
-                runtime.get("responses_ws_ping_timeout_seconds", 90.0),
-                runtime.get("responses_transport_provider", ""),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
@@ -26588,18 +26526,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "model": persisted.get("model"),
             "provider": persisted.get("provider"),
             "base_url": persisted.get("base_url"),
-            "responses_transport": persisted.get("responses_transport"),
-            "responses_ws_url": persisted.get("responses_ws_url"),
-            "responses_ws_state": persisted.get("responses_ws_state"),
-            "responses_ws_ping_interval_seconds": persisted.get(
-                "responses_ws_ping_interval_seconds"
-            ),
-            "responses_ws_ping_timeout_seconds": persisted.get(
-                "responses_ws_ping_timeout_seconds"
-            ),
-            "responses_transport_provider": persisted.get(
-                "responses_transport_provider"
-            ),
         }
         provider = persisted.get("provider")
         if provider:
@@ -26612,16 +26538,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
-                for key in (
-                    "responses_transport",
-                    "responses_ws_url",
-                    "responses_ws_state",
-                    "responses_ws_ping_interval_seconds",
-                    "responses_ws_ping_timeout_seconds",
-                    "responses_transport_provider",
-                ):
-                    if key not in override and runtime.get(key) is not None:
-                        override[key] = runtime.get(key)
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
                 runtime_request_overrides = runtime.get("request_overrides")
@@ -26662,12 +26578,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "api_key",
             "base_url",
             "api_mode",
-            "responses_transport",
-            "responses_ws_url",
-            "responses_ws_state",
-            "responses_ws_ping_interval_seconds",
-            "responses_ws_ping_timeout_seconds",
-            "responses_transport_provider",
             "credential_pool",
         ):
             val = override.get(key)

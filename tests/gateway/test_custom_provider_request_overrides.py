@@ -313,9 +313,6 @@ custom_providers:
         api_key="test-key",
         base_url="https://example.test/v1",
         api_mode="chat_completions",
-        responses_transport="auto",
-        responses_ws_url="wss://example.test/ws/responses",
-        responses_transport_provider="custom:edge",
         request_overrides=_PROVIDER_OVERRIDES,
         provider_label="Edge",
     )
@@ -356,12 +353,3 @@ custom_providers:
 
     assert result["final_response"] == "ok"
     assert _CapturingAgent.last_init["request_overrides"] == _PROVIDER_OVERRIDES
-    assert _CapturingAgent.last_init["responses_transport"] == "auto"
-    assert (
-        _CapturingAgent.last_init["responses_ws_url"]
-        == "wss://example.test/ws/responses"
-    )
-    assert (
-        _CapturingAgent.last_init["responses_transport_provider"]
-        == "custom:edge"
-    )

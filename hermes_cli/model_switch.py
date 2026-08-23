@@ -620,12 +620,6 @@ class ModelSwitchResult:
     api_key: str = ""
     base_url: str = ""
     api_mode: str = ""
-    responses_transport: str = "sse"
-    responses_ws_url: str = ""
-    responses_ws_state: bool = False
-    responses_ws_ping_interval_seconds: float = 30.0
-    responses_ws_ping_timeout_seconds: float = 90.0
-    responses_transport_provider: str = ""
     request_overrides: Optional[dict] = None
     error_message: str = ""
     warning_message: str = ""
@@ -1854,38 +1848,10 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
-    responses_transport = "sse"
-    responses_ws_url = ""
-    responses_ws_state = False
-    responses_ws_ping_interval_seconds = 30.0
-    responses_ws_ping_timeout_seconds = 90.0
-    responses_transport_provider = ""
     request_overrides = None
     ollama_headers: dict[str, str] = {}
     validation_headers: dict[str, str] = {}
     suppress_ollama_headers = False
-
-    def _lift_runtime_transport(runtime: dict) -> None:
-        nonlocal responses_transport, responses_ws_url
-        nonlocal responses_ws_state, responses_transport_provider
-        nonlocal responses_ws_ping_interval_seconds, responses_ws_ping_timeout_seconds
-
-        from agent.codex_responses_ws_transport import normalize_responses_transport
-
-        responses_transport = normalize_responses_transport(
-            runtime.get("responses_transport")
-        )
-        responses_ws_url = str(runtime.get("responses_ws_url") or "").strip()
-        responses_ws_state = bool(runtime.get("responses_ws_state", False))
-        responses_ws_ping_interval_seconds = float(
-            runtime.get("responses_ws_ping_interval_seconds", 30.0)
-        )
-        responses_ws_ping_timeout_seconds = float(
-            runtime.get("responses_ws_ping_timeout_seconds", 90.0)
-        )
-        responses_transport_provider = str(
-            runtime.get("responses_transport_provider") or ""
-        ).strip().lower()
 
     if provider_changed or explicit_provider:
         # User-config providers (providers.<name> in config.yaml) carry their
@@ -1929,7 +1895,6 @@ def switch_model(
                 api_mode = runtime.get("api_mode", "")
                 validation_headers = runtime.get("extra_headers") or validation_headers
                 request_overrides = runtime.get("request_overrides")
-                _lift_runtime_transport(runtime)
             except Exception:
                 api_key = _ukey
                 base_url = _user_pdef.base_url
@@ -1949,7 +1914,6 @@ def switch_model(
                 api_mode = runtime.get("api_mode", "")
                 validation_headers = runtime.get("extra_headers") or validation_headers
                 request_overrides = runtime.get("request_overrides")
-                _lift_runtime_transport(runtime)
             except Exception as e:
                 return ModelSwitchResult(
                     success=False,
@@ -2011,7 +1975,6 @@ def switch_model(
                 api_mode = runtime.get("api_mode", "")
                 validation_headers = runtime.get("extra_headers") or validation_headers
                 request_overrides = runtime.get("request_overrides")
-                _lift_runtime_transport(runtime)
             except Exception:
                 pass
 
@@ -2234,12 +2197,6 @@ def switch_model(
         api_key=api_key,
         base_url=base_url,
         api_mode=api_mode,
-        responses_transport=responses_transport,
-        responses_ws_url=responses_ws_url,
-        responses_ws_state=responses_ws_state,
-        responses_ws_ping_interval_seconds=responses_ws_ping_interval_seconds,
-        responses_ws_ping_timeout_seconds=responses_ws_ping_timeout_seconds,
-        responses_transport_provider=responses_transport_provider,
         request_overrides=dict(request_overrides or {}),
         warning_message=" | ".join(warnings) if warnings else "",
         provider_label=provider_label,

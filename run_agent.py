@@ -523,12 +523,6 @@ class AIAgent:
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
         requested_provider: str = None,
-        responses_transport: str = "sse",
-        responses_ws_url: str = None,
-        responses_ws_state: bool = False,
-        responses_ws_ping_interval_seconds: float = 30.0,
-        responses_ws_ping_timeout_seconds: float = 90.0,
-        responses_transport_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         if tool_delay is not None:
@@ -619,12 +613,6 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
-            responses_transport=responses_transport,
-            responses_ws_url=responses_ws_url,
-            responses_ws_state=responses_ws_state,
-            responses_ws_ping_interval_seconds=responses_ws_ping_interval_seconds,
-            responses_ws_ping_timeout_seconds=responses_ws_ping_timeout_seconds,
-            responses_transport_provider=responses_transport_provider,
         )
 
     def _get_session_db_for_recall(self):
@@ -913,12 +901,6 @@ class AIAgent:
         api_key='',
         base_url='',
         api_mode='',
-        responses_transport='sse',
-        responses_ws_url=None,
-        responses_ws_state=False,
-        responses_ws_ping_interval_seconds=30.0,
-        responses_ws_ping_timeout_seconds=90.0,
-        responses_transport_provider=None,
         request_overrides=None,
     ):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
@@ -930,13 +912,7 @@ class AIAgent:
             api_key,
             base_url,
             api_mode,
-            responses_transport,
-            responses_ws_url,
-            responses_ws_state,
-            responses_ws_ping_interval_seconds,
-            responses_ws_ping_timeout_seconds,
-            responses_transport_provider,
-            request_overrides,
+            request_overrides=request_overrides,
         )
 
     def _safe_print(self, *args, **kwargs):
@@ -4729,17 +4705,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 6c. Close the Codex Responses WebSocket session owned by this
-        # AIAgent. The session may keep a reusable socket/pump alive across
-        # successful turns, so hard teardown must explicitly retire it.
-        try:
-            from agent.agent_runtime_helpers import close_codex_responses_ws_session
-
-            close_codex_responses_ws_session(self, "agent_close")
-        except Exception:
-            pass
-
-        # 6d. Close the Codex app-server session. The runtime already drops
+        # 6c. Close the Codex app-server session. The runtime already drops
         # it on turn crash / retirement (agent/codex_runtime.py), but hard
         # teardown had no owner — a /new, /reset, or session expiry left the
         # app-server child process running until interpreter exit. Clear the

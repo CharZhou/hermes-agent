@@ -48,7 +48,7 @@ from hermes_cli.config import (
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.providers import is_official_openai_host
-from utils import base_url_host_matches, base_url_hostname, env_int, is_truthy_value
+from utils import base_url_host_matches, base_url_hostname, env_int
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -704,38 +704,6 @@ def _lift_extra_headers(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
         result["extra_headers"] = extra_headers
 
 
-def _lift_responses_ws_transport(
-    entry: Dict[str, Any], result: Dict[str, Any], *, identity: str,
-) -> None:
-    """Copy opt-in generic Responses WebSocket settings from a named entry."""
-    from agent.codex_responses_ws_transport import (
-        DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS,
-        DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS,
-        normalize_responses_transport,
-        normalize_responses_ws_keepalive_seconds,
-    )
-
-    result["responses_transport"] = normalize_responses_transport(
-        entry.get("responses_transport")
-    )
-    ws_url = entry.get("responses_ws_url")
-    if isinstance(ws_url, str) and ws_url.strip():
-        result["responses_ws_url"] = ws_url.strip()
-    ws_state = entry.get("responses_ws_state")
-    result["responses_ws_state"] = (
-        ws_state if isinstance(ws_state, bool) else bool(is_truthy_value(ws_state))
-    )
-    result["responses_ws_ping_interval_seconds"] = normalize_responses_ws_keepalive_seconds(
-        entry.get("responses_ws_ping_interval_seconds"),
-        default=DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS,
-    )
-    result["responses_ws_ping_timeout_seconds"] = normalize_responses_ws_keepalive_seconds(
-        entry.get("responses_ws_ping_timeout_seconds"),
-        default=DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS,
-    )
-    result["responses_transport_provider"] = identity
-
-
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm:
@@ -834,11 +802,6 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
-                    _lift_responses_ws_transport(
-                        entry,
-                        result,
-                        identity=f"custom:{_normalize_custom_provider_name(ep_name)}",
-                    )
                     _lift_max_output_tokens(entry, result)
                     return result
 
@@ -883,13 +846,6 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
-        _lift_responses_ws_transport(
-            entry,
-            result,
-            identity=(
-                f"custom:{_normalize_custom_provider_name(provider_key or name)}"
-            ),
-        )
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
@@ -1228,16 +1184,6 @@ def _resolve_named_custom_runtime(
         # credentials. NEVER log the values.
         if custom_provider.get("extra_headers"):
             pool_result["extra_headers"] = dict(custom_provider["extra_headers"])
-        for key in (
-            "responses_transport",
-            "responses_ws_url",
-            "responses_ws_state",
-            "responses_ws_ping_interval_seconds",
-            "responses_ws_ping_timeout_seconds",
-            "responses_transport_provider",
-        ):
-            if key in custom_provider:
-                pool_result[key] = custom_provider[key]
         return pool_result
 
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
@@ -1300,17 +1246,6 @@ def _resolve_named_custom_runtime(
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
         result["request_overrides"] = request_overrides
-    for key in (
-        "responses_transport",
-        "responses_ws_url",
-        "responses_ws_state",
-        "responses_ws_ping_interval_seconds",
-        "responses_ws_ping_timeout_seconds",
-        "responses_transport_provider",
-    ):
-        if key in custom_provider:
-            result[key] = custom_provider[key]
-
     # Custom providers in the OpenCode family (name extends opencode-go/zen,
     # or base_url hosted on opencode.ai) serve models behind different API
     # surfaces per model — a static api_mode 503s for /v1/responses-only

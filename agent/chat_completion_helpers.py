@@ -1583,12 +1583,6 @@ def interruptible_api_call(agent, api_kwargs: dict):
             )
             _ttfb_timeout = _ttfb_cap
 
-    # A Codex no-byte watchdog must always arbitrate before the generic
-    # non-stream stale detector. Otherwise the 90s default can kill a request
-    # before the configured 120s TTFB allowance has elapsed.
-    if _ttfb_enabled:
-        _stale_timeout = max(_stale_timeout, _ttfb_timeout)
-
     _codex_idle_enabled = _codex_watchdog_enabled
     _codex_idle_timeout = _env_float(
         "HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS",
@@ -2689,10 +2683,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             ):
                 fb_api_mode = "bedrock_converse"
 
-        from agent.agent_runtime_helpers import close_codex_responses_ws_session
-
-        close_codex_responses_ws_session(agent, "provider_fallback")
-
         old_model = agent.model
         old_provider = agent.provider
 
@@ -2705,20 +2695,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.requested_provider = resolved_fb_requested_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
-        agent.responses_transport = fb_runtime.get("responses_transport") or "sse"
-        agent.responses_ws_url = fb_runtime.get("responses_ws_url")
-        agent.responses_ws_state = bool(fb_runtime.get("responses_ws_state", False))
-        agent.responses_ws_ping_interval_seconds = fb_runtime.get(
-            "responses_ws_ping_interval_seconds", 30.0
-        )
-        agent.responses_ws_ping_timeout_seconds = fb_runtime.get(
-            "responses_ws_ping_timeout_seconds", 90.0
-        )
-        agent.responses_transport_provider = fb_runtime.get(
-            "responses_transport_provider"
-        )
         agent.request_overrides = fb_request_overrides
-        agent._generic_ws_auto_disabled_for = None
         # Per-provider reasoning_content echo opt-in (see _reasoning_echo_opt_in).
         # Read from the fallback entry so the flag travels with the active
         # provider; restore_primary_runtime will revert it from the snapshot.

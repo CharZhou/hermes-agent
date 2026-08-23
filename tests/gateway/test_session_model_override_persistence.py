@@ -33,12 +33,6 @@ OVERRIDE = {
     "api_key": "sk-SUPER-SECRET-do-not-persist",
     "base_url": "https://api.openai.example/v1",
     "api_mode": "responses",
-    "responses_transport": "auto",
-    "responses_ws_url": "wss://api.openai.example/ws/responses",
-    "responses_ws_state": True,
-    "responses_ws_ping_interval_seconds": 45.0,
-    "responses_ws_ping_timeout_seconds": 150.0,
-    "responses_transport_provider": "custom:relay",
     "request_overrides": {
         "extra_body": {"text": {"verbosity": "low"}},
     },
@@ -92,12 +86,6 @@ def test_override_persists_and_survives_restart(store_factory, tmp_path):
         "model": "gpt-5o",
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
-        "responses_transport": "auto",
-        "responses_ws_url": "wss://api.openai.example/ws/responses",
-        "responses_ws_state": True,
-        "responses_ws_ping_interval_seconds": 45.0,
-        "responses_ws_ping_timeout_seconds": 150.0,
-        "responses_transport_provider": "custom:relay",
     }
 
 
@@ -126,10 +114,6 @@ def test_runner_rehydrates_override_after_restart(store_factory):
             "api_mode": "responses",
             "base_url": "https://api.openai.example/v1",
             "provider": "openai",
-            "responses_transport": "auto",
-            "responses_ws_url": "wss://api.openai.example/ws/responses",
-            "responses_ws_state": True,
-            "responses_transport_provider": "custom:relay",
             "request_overrides": {
                 "extra_body": {"text": {"verbosity": "low"}},
             },
@@ -144,10 +128,6 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     # Credentials come from live resolution, never from disk.
     assert override["api_key"] == "sk-fresh-from-keychain"
     assert override["api_mode"] == "responses"
-    assert override["responses_transport"] == "auto"
-    assert override["responses_ws_url"] == "wss://api.openai.example/ws/responses"
-    assert override["responses_ws_state"] is True
-    assert override["responses_transport_provider"] == "custom:relay"
     assert override["request_overrides"] == {
         "extra_body": {"text": {"verbosity": "low"}},
     }
@@ -161,10 +141,4 @@ def test_sanitize_model_override():
         "model": "gpt-5o",
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
-        "responses_transport": "auto",
-        "responses_ws_url": "wss://api.openai.example/ws/responses",
-        "responses_ws_state": True,
-        "responses_ws_ping_interval_seconds": 45.0,
-        "responses_ws_ping_timeout_seconds": 150.0,
-        "responses_transport_provider": "custom:relay",
     }

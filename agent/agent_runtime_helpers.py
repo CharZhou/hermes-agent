@@ -1339,7 +1339,6 @@ def try_recover_primary_transport(
         return False
 
     try:
-        old_ws_identity = codex_responses_ws_runtime_identity(agent)
         # Retire the existing client to release stale connections. #70773:
         # never hard-close the shared client here — this runs on the
         # conversation-loop thread while workers from stale-killed streaming
@@ -1363,26 +1362,11 @@ def try_recover_primary_transport(
         agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]
         agent.api_mode = rt["api_mode"]
-        agent.responses_transport = rt.get("responses_transport", "sse")
-        agent.responses_ws_url = rt.get("responses_ws_url")
-        agent.responses_ws_state = bool(rt.get("responses_ws_state", False))
-        agent.responses_ws_ping_interval_seconds = rt.get(
-            "responses_ws_ping_interval_seconds", 30.0
-        )
-        agent.responses_ws_ping_timeout_seconds = rt.get(
-            "responses_ws_ping_timeout_seconds", 90.0
-        )
-        agent.responses_transport_provider = rt.get(
-            "responses_transport_provider"
-        )
         agent.request_overrides = dict(rt.get("request_overrides") or {})
-        agent._generic_ws_auto_disabled_for = None
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
-        if codex_responses_ws_runtime_identity(agent) != old_ws_identity:
-            close_codex_responses_ws_session(agent, "primary_transport_recovery")
 
         if agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -1422,72 +1406,6 @@ def try_recover_primary_transport(
         return False
 
 # ── End provider fallback ──────────────────────────────────────────────
-
-
-def close_codex_responses_ws_session(agent, reason: str) -> bool:
-    """Close and forget the agent-owned Responses WebSocket session."""
-    session = getattr(agent, "_codex_responses_ws_session", None)
-    if session is None:
-        return False
-    try:
-        agent._codex_responses_ws_session = None
-    except Exception:
-        pass
-    try:
-        agent._codex_responses_ws_session_identity = None
-    except Exception:
-        pass
-    close = getattr(session, "close", None)
-    if callable(close):
-        try:
-            close()
-        except Exception:
-            logger.debug(
-                "Responses WebSocket session close failed (%s)",
-                reason,
-                exc_info=True,
-            )
-    return True
-
-
-def codex_responses_ws_runtime_identity(agent) -> tuple:
-    """Return the runtime identity that owns reusable Responses WS state."""
-    client_kwargs = getattr(agent, "_client_kwargs", {}) or {}
-    return (
-        getattr(agent, "session_id", None),
-        str(getattr(agent, "provider", "") or "").strip().lower(),
-        str(getattr(agent, "requested_provider", "") or "").strip().lower(),
-        str(getattr(agent, "base_url", "") or "").rstrip("/"),
-        str(getattr(agent, "api_mode", "") or "").strip().lower(),
-        str(getattr(agent, "model", "") or ""),
-        str(getattr(agent, "responses_transport", "") or "").strip().lower(),
-        str(getattr(agent, "responses_ws_url", "") or "").strip(),
-        bool(getattr(agent, "responses_ws_state", False)),
-        float(getattr(agent, "responses_ws_ping_interval_seconds", 30.0)),
-        float(getattr(agent, "responses_ws_ping_timeout_seconds", 90.0)),
-        str(getattr(agent, "responses_transport_provider", "") or "").strip().lower(),
-        str(getattr(agent, "api_key", "") or ""),
-        tuple(sorted((str(k), str(v)) for k, v in dict(client_kwargs.get("default_headers") or {}).items())),
-    )
-
-
-def reset_codex_responses_ws_session(agent, reason: str) -> bool:
-    """Reset the agent-owned Responses WebSocket session if one exists."""
-    session = getattr(agent, "_codex_responses_ws_session", None)
-    if session is None:
-        return False
-    reset = getattr(session, "reset", None)
-    if callable(reset):
-        try:
-            reset(reason)
-            return True
-        except Exception:
-            logger.debug(
-                "Responses WebSocket session reset failed (%s); closing session",
-                reason,
-                exc_info=True,
-            )
-    return close_codex_responses_ws_session(agent, reason)
 
 
 
@@ -1688,27 +1606,13 @@ def restore_primary_runtime(agent) -> bool:
 
     rt = agent._primary_runtime
     try:
-        old_ws_identity = codex_responses_ws_runtime_identity(agent)
         # ── Core runtime state ──
         agent.model = rt["model"]
         agent.provider = rt["provider"]
         agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
         agent.api_mode = rt["api_mode"]
-        agent.responses_transport = rt.get("responses_transport", "sse")
-        agent.responses_ws_url = rt.get("responses_ws_url")
-        agent.responses_ws_state = bool(rt.get("responses_ws_state", False))
-        agent.responses_ws_ping_interval_seconds = rt.get(
-            "responses_ws_ping_interval_seconds", 30.0
-        )
-        agent.responses_ws_ping_timeout_seconds = rt.get(
-            "responses_ws_ping_timeout_seconds", 90.0
-        )
-        agent.responses_transport_provider = rt.get(
-            "responses_transport_provider"
-        )
         agent.request_overrides = dict(rt.get("request_overrides") or {})
-        agent._generic_ws_auto_disabled_for = None
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
@@ -1727,8 +1631,6 @@ def restore_primary_runtime(agent) -> bool:
         if getattr(agent, "_cache_disabled", False):
             agent._use_prompt_caching = False
             agent._use_native_cache_layout = False
-        if codex_responses_ws_runtime_identity(agent) != old_ws_identity:
-            close_codex_responses_ws_session(agent, "restore_primary_runtime")
 
         # ── Rebuild client for the primary provider ──
         if agent.provider == "moa":
@@ -2804,12 +2706,6 @@ def switch_model(
     api_key='',
     base_url='',
     api_mode='',
-    responses_transport='sse',
-    responses_ws_url=None,
-    responses_ws_state=False,
-    responses_ws_ping_interval_seconds=30.0,
-    responses_ws_ping_timeout_seconds=90.0,
-    responses_transport_provider=None,
     request_overrides=None,
 ):
     """Switch the model/provider in-place for a live agent.
@@ -2851,7 +2747,6 @@ def switch_model(
 
     old_model = agent.model
     old_provider = agent.provider
-    old_ws_identity = codex_responses_ws_runtime_identity(agent)
 
     # ── Snapshot all fields the swap+rebuild can mutate ──
     # If the rebuild raises (bad API key, network error, build_anthropic_client
@@ -2874,11 +2769,6 @@ def switch_model(
             "base_url",
             "api_mode",
             "api_key",
-            "responses_transport",
-            "responses_ws_url",
-            "responses_ws_state",
-            "responses_transport_provider",
-            "_generic_ws_auto_disabled_for",
             "client",
             "_anthropic_client",
             "_anthropic_api_key",
@@ -2950,35 +2840,7 @@ def switch_model(
                 "refusing to keep the previous provider's endpoint"
             )
         agent.api_mode = api_mode
-        from agent.codex_responses_ws_transport import (
-            DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS,
-            DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS,
-            normalize_responses_transport,
-            normalize_responses_ws_keepalive_seconds,
-        )
-
-        agent.responses_transport = normalize_responses_transport(
-            responses_transport
-        )
-        agent.responses_ws_url = (
-            str(responses_ws_url).strip() if responses_ws_url else None
-        )
-        agent.responses_ws_state = bool(responses_ws_state)
-        agent.responses_ws_ping_interval_seconds = normalize_responses_ws_keepalive_seconds(
-            responses_ws_ping_interval_seconds,
-            default=DEFAULT_RESPONSES_WS_PING_INTERVAL_SECONDS,
-        )
-        agent.responses_ws_ping_timeout_seconds = normalize_responses_ws_keepalive_seconds(
-            responses_ws_ping_timeout_seconds,
-            default=DEFAULT_RESPONSES_WS_PING_TIMEOUT_SECONDS,
-        )
-        agent.responses_transport_provider = (
-            str(responses_transport_provider).strip().lower()
-            if responses_transport_provider
-            else None
-        )
         agent.request_overrides = dict(request_overrides or {})
-        agent._generic_ws_auto_disabled_for = None
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -3235,18 +3097,6 @@ def switch_model(
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
-        "responses_transport": getattr(agent, "responses_transport", "sse"),
-        "responses_ws_url": getattr(agent, "responses_ws_url", None),
-        "responses_ws_state": bool(getattr(agent, "responses_ws_state", False)),
-        "responses_ws_ping_interval_seconds": getattr(
-            agent, "responses_ws_ping_interval_seconds", 30.0
-        ),
-        "responses_ws_ping_timeout_seconds": getattr(
-            agent, "responses_ws_ping_timeout_seconds", 90.0
-        ),
-        "responses_transport_provider": getattr(
-            agent, "responses_transport_provider", None
-        ),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
@@ -3289,9 +3139,6 @@ def switch_model(
         ]
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
-
-    if codex_responses_ws_runtime_identity(agent) != old_ws_identity:
-        close_codex_responses_ws_session(agent, "switch_model")
 
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",
@@ -4772,9 +4619,6 @@ __all__ = [
     "strip_think_blocks",
     "recover_with_credential_pool",
     "try_recover_primary_transport",
-    "close_codex_responses_ws_session",
-    "codex_responses_ws_runtime_identity",
-    "reset_codex_responses_ws_session",
     "drop_thinking_only_and_merge_users",
     "restore_primary_runtime",
     "extract_reasoning",

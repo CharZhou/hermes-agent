@@ -5259,9 +5259,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
-        self.responses_transport = "sse"
-        self.responses_ws_url = None
-        self.responses_transport_provider = None
         self.acp_command: Optional[str] = None
         self.acp_args: list[str] = []
         self.base_url = (
@@ -11067,11 +11064,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "api_key": self.api_key,
             "base_url": self.base_url,
             "api_mode": self.api_mode,
-            "responses_transport": getattr(self, "responses_transport", "sse"),
-            "responses_ws_url": getattr(self, "responses_ws_url", None),
-            "responses_transport_provider": getattr(
-                self, "responses_transport_provider", None
-            ),
             "request_overrides": dict(
                 getattr(agent, "request_overrides", {}) or {}
             ) if agent is not None else {},
@@ -11093,9 +11085,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "api_key",
             "base_url",
             "api_mode",
-            "responses_transport",
-            "responses_ws_url",
-            "responses_transport_provider",
         ):
             if key in snapshot:
                 setattr(self, key, snapshot.get(key))
@@ -11123,20 +11112,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     api_key=snapshot.get("api_key", ""),
                     base_url=snapshot.get("base_url", ""),
                     api_mode=snapshot.get("api_mode", ""),
-                    responses_transport=snapshot.get(
-                        "responses_transport", "sse"
-                    ),
-                    responses_ws_url=snapshot.get("responses_ws_url"),
-                    responses_ws_state=snapshot.get("responses_ws_state", False),
-                    responses_ws_ping_interval_seconds=snapshot.get(
-                        "responses_ws_ping_interval_seconds", 30.0
-                    ),
-                    responses_ws_ping_timeout_seconds=snapshot.get(
-                        "responses_ws_ping_timeout_seconds", 90.0
-                    ),
-                    responses_transport_provider=snapshot.get(
-                        "responses_transport_provider"
-                    ),
                     request_overrides=snapshot.get("request_overrides"),
                 )
             except Exception as exc:
@@ -11258,11 +11233,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "api_key": self.api_key,
             "base_url": self.base_url,
             "api_mode": self.api_mode,
-            "responses_transport": getattr(self, "responses_transport", "sse"),
-            "responses_ws_url": getattr(self, "responses_ws_url", None),
-            "responses_transport_provider": getattr(
-                self, "responses_transport_provider", None
-            ),
         }
         self.model = result.new_model
         self.provider = result.target_provider
@@ -11278,18 +11248,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
-        self.responses_transport = getattr(result, "responses_transport", "sse")
-        self.responses_ws_url = getattr(result, "responses_ws_url", None) or None
-        self.responses_ws_state = getattr(result, "responses_ws_state", False)
-        self.responses_ws_ping_interval_seconds = getattr(
-            result, "responses_ws_ping_interval_seconds", 30.0
-        )
-        self.responses_ws_ping_timeout_seconds = getattr(
-            result, "responses_ws_ping_timeout_seconds", 90.0
-        )
-        self.responses_transport_provider = (
-            getattr(result, "responses_transport_provider", None) or None
-        )
 
         if self.agent is not None:
             try:
@@ -11299,20 +11257,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
-                    responses_transport=getattr(
-                        result, "responses_transport", "sse"
-                    ),
-                    responses_ws_url=getattr(result, "responses_ws_url", None),
-                    responses_ws_state=getattr(result, "responses_ws_state", False),
-                    responses_ws_ping_interval_seconds=getattr(
-                        result, "responses_ws_ping_interval_seconds", 30.0
-                    ),
-                    responses_ws_ping_timeout_seconds=getattr(
-                        result, "responses_ws_ping_timeout_seconds", 90.0
-                    ),
-                    responses_transport_provider=(
-                        getattr(result, "responses_transport_provider", None)
-                    ),
                     request_overrides=getattr(result, "request_overrides", None),
                 )
             except Exception as exc:
@@ -11679,11 +11623,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "api_key": self.api_key,
             "base_url": self.base_url,
             "api_mode": self.api_mode,
-            "responses_transport": getattr(self, "responses_transport", "sse"),
-            "responses_ws_url": getattr(self, "responses_ws_url", None),
-            "responses_transport_provider": getattr(
-                self, "responses_transport_provider", None
-            ),
         }
         self.model = result.new_model
         self.provider = result.target_provider
@@ -11699,18 +11638,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
-        self.responses_transport = getattr(result, "responses_transport", "sse")
-        self.responses_ws_url = getattr(result, "responses_ws_url", None) or None
-        self.responses_ws_state = getattr(result, "responses_ws_state", False)
-        self.responses_ws_ping_interval_seconds = getattr(
-            result, "responses_ws_ping_interval_seconds", 30.0
-        )
-        self.responses_ws_ping_timeout_seconds = getattr(
-            result, "responses_ws_ping_timeout_seconds", 90.0
-        )
-        self.responses_transport_provider = (
-            getattr(result, "responses_transport_provider", None) or None
-        )
 
         # Apply to running agent (in-place swap)
         if self.agent is not None:
@@ -11721,20 +11648,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
-                    responses_transport=getattr(
-                        result, "responses_transport", "sse"
-                    ),
-                    responses_ws_url=getattr(result, "responses_ws_url", None),
-                    responses_ws_state=getattr(result, "responses_ws_state", False),
-                    responses_ws_ping_interval_seconds=getattr(
-                        result, "responses_ws_ping_interval_seconds", 30.0
-                    ),
-                    responses_ws_ping_timeout_seconds=getattr(
-                        result, "responses_ws_ping_timeout_seconds", 90.0
-                    ),
-                    responses_transport_provider=(
-                        getattr(result, "responses_transport_provider", None)
-                    ),
                     request_overrides=getattr(result, "request_overrides", None),
                 )
             except Exception as exc:

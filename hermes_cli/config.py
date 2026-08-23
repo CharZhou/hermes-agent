@@ -18,7 +18,6 @@ import copy
 from hermes_cli.cli_output import line_input
 import json
 import logging
-import math
 import os
 import platform
 import re
@@ -36,7 +35,6 @@ from typing import Dict, Any, Optional, List, Tuple, Set
 
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
-from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -1394,9 +1392,6 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
-        "responses_transport", "responses_ws_url",
-        "responses_ws_state",
-        "responses_ws_ping_interval_seconds", "responses_ws_ping_timeout_seconds",
         "ssl_ca_cert", "ssl_verify",
     }
     for camel, snake in _CAMEL_ALIASES.items():
@@ -1542,45 +1537,6 @@ def _normalize_custom_provider_entry(
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
 
-    responses_transport = entry.get("responses_transport")
-    if isinstance(responses_transport, str) and responses_transport.strip():
-        normalized["responses_transport"] = responses_transport.strip()
-
-    responses_ws_url = entry.get("responses_ws_url")
-    if isinstance(responses_ws_url, str) and responses_ws_url.strip():
-        normalized["responses_ws_url"] = responses_ws_url.strip()
-
-    responses_ws_state = entry.get("responses_ws_state")
-    if isinstance(responses_ws_state, bool):
-        normalized["responses_ws_state"] = responses_ws_state
-    elif is_truthy_value(responses_ws_state):
-        normalized["responses_ws_state"] = True
-
-    for key in (
-        "responses_ws_ping_interval_seconds",
-        "responses_ws_ping_timeout_seconds",
-    ):
-        value = entry.get(key)
-        if value is None:
-            continue
-        if isinstance(value, bool):
-            duration = 0.0
-        else:
-            try:
-                duration = float(value)
-            except (TypeError, ValueError):
-                duration = 0.0
-        if math.isfinite(duration) and duration > 0:
-            normalized[key] = duration
-        else:
-            _warn_once_per_provider(
-                provider_key,
-                f"invalid:{key}",
-                "providers.%s: %s must be a positive number; using the default",
-                provider_key or "?",
-                key,
-            )
-
     # Per-provider extra HTTP headers (proxies, gateways, custom auth).
     # Values may carry credentials (e.g. CF-Access-Client-Secret) — never
     # log them anywhere downstream.
@@ -1627,11 +1583,6 @@ def _custom_provider_entry_to_provider_config(
         "discover_models",
         "extra_body",
         "extra_headers",
-        "responses_transport",
-        "responses_ws_url",
-        "responses_ws_state",
-        "responses_ws_ping_interval_seconds",
-        "responses_ws_ping_timeout_seconds",
         "ssl_ca_cert",
         "ssl_verify",
     ):
