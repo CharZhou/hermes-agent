@@ -136,6 +136,62 @@ async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_pa
     adapter.send_voice.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_streaming_delivery_merges_event_metadata_into_precomputed_thread_route(
+    tmp_path, monkeypatch,
+):
+    """Queued media keeps its route and safe event metadata."""
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_1",
+        chat_type="group",
+        thread_id="source-topic",
+    )
+    event = MessageEvent(
+        text="send image",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="om_1",
+        metadata={
+            "delivery_metadata": {
+                "feishu_mention_targets": {"Alex": "ou_alex"},
+            },
+        },
+    )
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "threaded.png")
+    precomputed_metadata = {
+        "thread_id": "queued-topic",
+        "reply_to_message_id": "trigger-message",
+    }
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_multiple_images=AsyncMock(return_value=None),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "recomputed-topic"}),
+        f"MEDIA:{media_file}",
+        event,
+        adapter,
+        thread_metadata=precomputed_metadata,
+    )
+
+    adapter.send_multiple_images.assert_awaited_once_with(
+        chat_id="oc_1",
+        images=[(f"file://{media_file.as_posix()}", "")],
+        metadata={
+            **precomputed_metadata,
+            "feishu_mention_targets": {"Alex": "ou_alex"},
+        },
+    )
+
+
 class _DiscordMediaFailureAdapter(BasePlatformAdapter):
     """Minimal adapter to exercise non-streaming MEDIA failure notification."""
 

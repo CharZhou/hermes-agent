@@ -348,6 +348,7 @@ _RUNTIME_AGENT_OVERRIDE_KEYS = (
     "args",
     "credential_pool",
     "max_tokens",
+    "request_overrides",
 )
 
 
@@ -459,6 +460,7 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
     }
 
 
@@ -7089,6 +7091,7 @@ class APIServerAdapter(BasePlatformAdapter):
         chat_id: str = "",
         session_key: str = "",
         session_id: str = "",
+        run_id: str = "",
         browser_control_principal: str = "",
         browser_control_transport_family: str = "",
     ) -> list:
@@ -7114,6 +7117,7 @@ class APIServerAdapter(BasePlatformAdapter):
             chat_id=chat_id,
             session_key=session_key,
             session_id=session_id,
+            run_id=run_id,
             browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
             async_delivery=False,
@@ -7723,6 +7727,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                 chat_id=session_id or "",
                                 session_key=approval_session_key,
                                 session_id=session_id or "",
+                                run_id=run_id,
                                 browser_control_principal=(
                                     request_browser_control_principal
                                 ),

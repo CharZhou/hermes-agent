@@ -3,6 +3,7 @@ import os
 
 import pytest
 
+import gateway.session_context as session_context
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
@@ -74,6 +75,51 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # Clean up
     runner._clear_session_env(tokens)
+
+
+def test_run_id_is_session_scoped_and_cleared():
+    tokens = set_session_vars(run_id="run-123")
+
+    assert get_session_env("HERMES_RUN_ID") == "run-123"
+
+    clear_session_vars(tokens)
+    assert get_session_env("HERMES_RUN_ID") == ""
+
+
+def test_scoped_session_platform_ignores_process_env_and_restores_raw_state(
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "hostile-desktop")
+
+    with session_context.scoped_session_platform("cli"):
+        assert get_session_env("HERMES_SESSION_PLATFORM") == "cli"
+
+    assert get_session_env("HERMES_SESSION_PLATFORM") == "hostile-desktop"
+
+
+def test_scoped_session_platform_preserves_existing_real_surface():
+    tokens = set_session_vars(platform="telegram")
+    try:
+        with session_context.scoped_session_platform("cli"):
+            assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_scoped_session_platform_does_not_bind_synthetic_subagent(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "parent-env-fallback")
+
+    with session_context.scoped_session_platform("subagent"):
+        assert session_context._SESSION_PLATFORM.get() is _UNSET
+
+
+def test_scoped_session_platform_is_stack_safe():
+    with session_context.scoped_session_platform("desktop"):
+        assert get_session_env("HERMES_SESSION_PLATFORM") == "desktop"
+        with session_context.scoped_session_platform("tui"):
+            assert get_session_env("HERMES_SESSION_PLATFORM") == "desktop"
+
+    assert session_context._SESSION_PLATFORM.get() is _UNSET
 
 
 def test_clear_session_env_restores_previous_state(monkeypatch):
@@ -272,4 +318,3 @@ def test_cron_session_set_clear_and_reset_tristate(monkeypatch):
 
     reset_session_vars()
     assert get_session_env("HERMES_CRON_SESSION") == "1"
-

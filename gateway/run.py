@@ -2681,6 +2681,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    _delivery_metadata_for_event,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     build_auto_tts_output_path,
@@ -2880,8 +2881,18 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
         "max_tokens": max_tokens,
     }
+
+
+def _deep_merge_request_overrides(
+    base: Optional[dict], override: Optional[dict]
+) -> dict:
+    """Deep-merge request overrides with the second mapping taking precedence."""
+    from hermes_cli.config import _deep_merge
+
+    return _deep_merge(dict(base or {}), dict(override or {}))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -3020,6 +3031,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
     }
 
 
@@ -3078,6 +3090,9 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "request_overrides": dict(
+                        runtime.get("request_overrides") or {}
+                    ),
                     "model": entry.get("model"),
                 }
             except Exception as fb_exc:
@@ -8065,6 +8080,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "api_mode": override.get("api_mode"),
                 "max_tokens": override.get("max_tokens"),
                 "credential_pool": override.get("credential_pool"),
+                "request_overrides": dict(
+                    override.get("request_overrides") or {}
+                ),
             }
             if override_runtime.get("api_key"):
                 if override_runtime.get("credential_pool") is None:
@@ -8214,6 +8232,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
+        base_request_overrides = dict(
+            runtime_kwargs.get("request_overrides") or {}
+        )
         route = {
             "model": model,
             "runtime": runtime,
@@ -8230,14 +8251,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = {}
+            route["request_overrides"] = base_request_overrides
             return route
 
         try:
             overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
             overrides = None
-        route["request_overrides"] = overrides or {}
+        route["request_overrides"] = _deep_merge_request_overrides(
+            base_request_overrides,
+            overrides or {},
+        )
         return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
@@ -20381,6 +20405,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
+                delivery_metadata=_delivery_metadata_for_event(event),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -20972,11 +20997,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
+                _already_sent_metadata = _delivery_metadata_for_event(
+                    event,
+                    self._thread_metadata_for_source(
+                        source, self._reply_anchor_for_event(event)
+                    ),
+                )
                 if response:
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
                         await self._deliver_media_from_response(
-                            response, event, _media_adapter,
+                            response,
+                            event,
+                            _media_adapter,
+                            metadata=_already_sent_metadata,
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -20989,7 +21023,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await _foot_adapter.send(
                                 source.chat_id,
                                 _footer_line,
-                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                                metadata=_already_sent_metadata,
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
@@ -22437,13 +22471,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # stale inspected content), not an attachment request.
             adapter.extract_images(cleaned)
 
-            _thread_meta = (
+            _thread_meta = _delivery_metadata_for_event(
+                event,
                 dict(thread_metadata)
                 if thread_metadata is not None
                 else self._thread_metadata_for_source(
                     event.source,
                     self._reply_anchor_for_event(event),
-                )
+                ),
             )
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -26462,8 +26497,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         ``_session_model_overrides`` is in-memory only, so before persistence
         a restart silently reverted every session to the global default model.
-        The non-secret parts (model/provider/base_url) are written through to
-        the session store when /model runs (and cleared on /new); here we read
+        The non-secret routing metadata is written through to the session store
+        when /model runs (and cleared on /new); here we read
         them back on first use and re-resolve credentials via the normal
         runtime provider resolution — api_key is never persisted to disk.
 
@@ -26507,6 +26542,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["credential_pool"] = runtime.get("credential_pool")
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
+                runtime_request_overrides = runtime.get("request_overrides")
+                if isinstance(runtime_request_overrides, dict):
+                    override["request_overrides"] = dict(
+                        runtime_request_overrides
+                    )
             except Exception:
                 logger.debug(
                     "Credential re-resolution failed for persisted override "
@@ -26535,10 +26575,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
+        for key in (
+            "provider",
+            "api_key",
+            "base_url",
+            "api_mode",
+            "credential_pool",
+        ):
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
+        override_request_overrides = override.get("request_overrides")
+        if isinstance(override_request_overrides, dict):
+            runtime_kwargs["request_overrides"] = _deep_merge_request_overrides(
+                runtime_kwargs.get("request_overrides"),
+                override_request_overrides,
+            )
         if (
             runtime_kwargs.get("api_key")
             and runtime_kwargs.get("credential_pool") is None
@@ -27802,6 +27854,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
+        delivery_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -27909,6 +27962,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        if delivery_metadata:
+            _thread_metadata = {
+                **delivery_metadata,
+                **(_thread_metadata or {}),
+            }
 
         if _streaming_enabled:
             try:
@@ -28094,6 +28152,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        delivery_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -28114,6 +28173,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                delivery_metadata=delivery_metadata,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -28127,6 +28187,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                delivery_metadata=delivery_metadata,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -28270,6 +28331,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        delivery_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -28294,6 +28356,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
+                delivery_metadata=delivery_metadata,
             )
 
         from run_agent import AIAgent
@@ -28666,6 +28729,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # reply anchor; carry it so progress joins that thread.
             _progress_metadata = {"reply_to_message_id": event_message_id}
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
+        if delivery_metadata:
+            _progress_metadata = {
+                **delivery_metadata,
+                **(_progress_metadata or {}),
+            }
         if _native_slack_task_cards:
             # chat.startStream in channels requires the recipient team/user
             # pair; harmless extras elsewhere, so stamp them whenever known.
@@ -28810,6 +28878,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _status_thread_metadata = {
                     "reply_to_message_id": event_message_id
                 }
+        if delivery_metadata:
+            _status_thread_metadata = {
+                **delivery_metadata,
+                **(_status_thread_metadata or {}),
+            }
 
         # Bridge extracted to TurnRunner._status_callback_sync; publish the
         # status wiring computed above onto the shared TurnContext at the
@@ -29723,6 +29796,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # recursive call so queued voice turns can stream TTS and
                 # re-mark the generation for the final delivered turn.
                 next_message_type = None
+                next_delivery_metadata = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -29755,6 +29829,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
                     next_message_type = getattr(pending_event, "message_type", None)
+                    next_delivery_metadata = _delivery_metadata_for_event(pending_event)
 
                 # Clear the completed streaming marker from the prior logical
                 # turn so the recursive turn's streaming TTS is not suppressed
@@ -29810,6 +29885,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                     message_type=next_message_type,
+                    delivery_metadata=next_delivery_metadata,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
@@ -29985,12 +30061,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 elif _sc_msg_id and _sc_msg_id != "__no_edit__" and _sc_adapter is not None:
                     try:
-                        _reconcile_res = await _sc_adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=_sc_msg_id,
-                            content=_final,
-                            finalize=True,
-                        )
+                        _edit_kwargs = {
+                            "chat_id": source.chat_id,
+                            "message_id": _sc_msg_id,
+                            "content": _final,
+                            "finalize": True,
+                        }
+                        try:
+                            _edit_sig = inspect.signature(_sc_adapter.edit_message)
+                        except (TypeError, ValueError):
+                            _edit_sig = None
+                        if _edit_sig is not None and "metadata" in _edit_sig.parameters:
+                            _edit_kwargs["metadata"] = _status_thread_metadata
+                        _reconcile_res = await _sc_adapter.edit_message(**_edit_kwargs)
                         if getattr(_reconcile_res, "success", True):
                             response["already_sent"] = True
                             logger.info(
@@ -30019,12 +30102,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sc_msg_id = _sc.message_id
                 if _sc_msg_id:
                     try:
-                        await _sc.adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=_sc_msg_id,
-                            content=response["final_response"],
-                            finalize=True,
-                        )
+                        _edit_kwargs = {
+                            "chat_id": source.chat_id,
+                            "message_id": _sc_msg_id,
+                            "content": response["final_response"],
+                            "finalize": True,
+                        }
+                        try:
+                            _edit_sig = inspect.signature(_sc.adapter.edit_message)
+                        except (TypeError, ValueError):
+                            _edit_sig = None
+                        if _edit_sig is not None and "metadata" in _edit_sig.parameters:
+                            _edit_kwargs["metadata"] = _status_thread_metadata
+                        await _sc.adapter.edit_message(**_edit_kwargs)
                         response["already_sent"] = True
                         logger.info(
                             "Edited streamed message %s for session %s to include plugin-transformed content.",

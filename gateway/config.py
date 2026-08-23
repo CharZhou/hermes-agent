@@ -266,6 +266,16 @@ def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
     return default
 
 
+def _normalize_reply_to_mode(value: Any, default: str = "first") -> str:
+    """Normalize reply threading mode from YAML-compatible values."""
+    if value is False:
+        return "off"
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    return normalized or default
+
+
 def _ensure_platform_extra_dict(platforms_data: dict, name: str) -> tuple[dict, dict]:
     """Get-or-create ``platforms_data[name]`` and its nested ``extra`` dict.
 
@@ -739,6 +749,11 @@ class PlatformConfig:
         if _typing_text is None:
             _typing_text = extra.get("typing_status_text")
 
+        if "reply_to_mode" in data:
+            _reply_to_mode = data.get("reply_to_mode")
+        else:
+            _reply_to_mode = extra.get("reply_to_mode")
+
         channel_overrides: Dict[str, ChannelOverride] = {}
         raw_overrides = data.get("channel_overrides") or {}
         if isinstance(raw_overrides, dict):
@@ -751,7 +766,7 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_to_mode=_normalize_reply_to_mode(_reply_to_mode, "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
             typing_status_text=_typing_text,
@@ -1675,12 +1690,9 @@ def load_gateway_config() -> GatewayConfig:
                 # ``_merge_platform_map`` already merged it with the correct
                 # precedence, so re-applying it here would overwrite that.
                 if not _cfg_toplevel:
-                    for _src in (gateway_platforms, yaml_cfg.get("platforms")):
-                        if isinstance(_src, dict):
-                            _candidate = _src.get(plat.value)
-                            if isinstance(_candidate, dict):
-                                platform_cfg = _candidate
-                                break
+                    _candidate = platforms_data.get(plat.value)
+                    if isinstance(_candidate, dict):
+                        platform_cfg = _candidate
                 if not isinstance(platform_cfg, dict):
                     continue
                 # Collect bridgeable keys from this platform section
@@ -1780,9 +1792,20 @@ def load_gateway_config() -> GatewayConfig:
                             if isinstance(ov_data, dict)
                         }
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
-                if not bridged and not enabled_was_explicit and not has_channel_overrides:
+                has_reply_to_mode = "reply_to_mode" in platform_cfg
+                if (
+                    not bridged
+                    and not enabled_was_explicit
+                    and not has_channel_overrides
+                    and not has_reply_to_mode
+                ):
                     continue
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
+                if has_reply_to_mode:
+                    plat_data["reply_to_mode"] = _normalize_reply_to_mode(
+                        platform_cfg.get("reply_to_mode"),
+                        "first",
+                    )
                 if enabled_was_explicit:
                     plat_data["enabled"] = platform_cfg["enabled"]
                     # Mark the explicit enable/disable so the registry-driven

@@ -192,6 +192,105 @@ class TestStartRun:
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("gateway_session_key", "expected_session_key"),
+        [("scope-A", "scope-A"), (None, "conversation-A")],
+    )
+    async def test_start_binds_independent_run_session_and_approval_context(
+        self,
+        auth_adapter,
+        gateway_session_key,
+        expected_session_key,
+    ):
+        from gateway.session_context import clear_session_vars, get_session_env
+        from tools.approval import get_current_session_key
+
+        app = _create_runs_app(auth_adapter)
+        captured = {}
+        cleared = {}
+
+        def _clear_and_capture(tokens):
+            clear_session_vars(tokens)
+            cleared.update(
+                {
+                    "run_id": get_session_env("HERMES_RUN_ID"),
+                    "session_id": get_session_env("HERMES_SESSION_ID"),
+                    "session_key": get_session_env("HERMES_SESSION_KEY"),
+                    "platform": get_session_env("HERMES_SESSION_PLATFORM"),
+                    "approval_key": get_current_session_key(default=""),
+                }
+            )
+
+        headers = {"Authorization": "Bearer sk-secret"}
+        if gateway_session_key is not None:
+            headers["X-Hermes-Session-Key"] = gateway_session_key
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(auth_adapter, "_create_agent") as mock_create,
+                patch(
+                    "gateway.session_context.clear_session_vars",
+                    side_effect=_clear_and_capture,
+                ),
+            ):
+                mock_agent = MagicMock()
+
+                def _capture_run(
+                    user_message=None, conversation_history=None, task_id=None
+                ):
+                    captured.update(
+                        {
+                            "run_id": get_session_env("HERMES_RUN_ID"),
+                            "session_id": get_session_env("HERMES_SESSION_ID"),
+                            "session_key": get_session_env("HERMES_SESSION_KEY"),
+                            "platform": get_session_env("HERMES_SESSION_PLATFORM"),
+                            "approval_key": get_current_session_key(),
+                            "task_id": task_id,
+                        }
+                    )
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _capture_run
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "conversation-A"},
+                    headers=headers,
+                )
+                assert resp.status == 202
+                data = await resp.json()
+
+                for _ in range(40):
+                    status_resp = await cli.get(
+                        f"/v1/runs/{data['run_id']}",
+                        headers={"Authorization": "Bearer sk-secret"},
+                    )
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert captured == {
+            "run_id": data["run_id"],
+            "session_id": "conversation-A",
+            "session_key": expected_session_key,
+            "platform": "api_server",
+            "approval_key": data["run_id"],
+            "task_id": "conversation-A",
+        }
+        assert cleared == {
+            "run_id": "",
+            "session_id": "",
+            "session_key": "",
+            "platform": "",
+            "approval_key": "",
+        }
+
 
     @pytest.mark.asyncio
     async def test_start_rejects_conflicting_route_and_request_provider(self):
