@@ -10312,6 +10312,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             request_overrides=getattr(
                                 _reset_result, "request_overrides", None
                             ),
+                            capabilities=getattr(
+                                _reset_result, "runtime_capabilities", None
+                            ),
                         )
                     self.model = _reset_result.new_model
                     self.provider = _reset_result.target_provider
@@ -11490,6 +11493,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     base_url=snapshot.get("base_url", ""),
                     api_mode=snapshot.get("api_mode", ""),
                     request_overrides=snapshot.get("request_overrides"),
+                    capabilities=snapshot.get("capabilities"),
                 )
             except Exception as exc:
                 logger.warning("CLI one-turn model restore failed: %s", exc)
@@ -11635,6 +11639,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     base_url=result.base_url,
                     api_mode=result.api_mode,
                     request_overrides=getattr(result, "request_overrides", None),
+                    capabilities=getattr(result, "runtime_capabilities", None),
                 )
             except Exception as exc:
                 # The agent rolled itself back to the old working model/client.
@@ -12026,6 +12031,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     base_url=result.base_url,
                     api_mode=result.api_mode,
                     request_overrides=getattr(result, "request_overrides", None),
+                    capabilities=getattr(result, "runtime_capabilities", None),
                 )
             except Exception as exc:
                 # Agent rolled itself back; roll the CLI back too and abort so a

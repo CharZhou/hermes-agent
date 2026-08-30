@@ -6116,6 +6116,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             base_url=snapshot.get("base_url", ""),
             api_mode=snapshot.get("api_mode", ""),
             request_overrides=snapshot.get("request_overrides"),
+            capabilities=snapshot.get("capabilities"),
         )
 
 
@@ -6328,7 +6329,8 @@ def _apply_model_switch(
                 api_key=result.api_key,
                 base_url=result.base_url,
                 api_mode=result.api_mode,
-                request_overrides=getattr(result, "request_overrides", None),
+            request_overrides=getattr(result, "request_overrides", None),
+            capabilities=getattr(result, "runtime_capabilities", None),
             )
         except Exception as exc:
             # The in-place swap rolled the agent back to the old working
@@ -6631,7 +6633,8 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     acted only on PRESENT keys, leaving stale values active forever.
     """
     cfg = cfg if isinstance(cfg, dict) else {}
-    compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
+    compression_raw = cfg.get("compression")
+    compression = compression_raw if isinstance(compression_raw, dict) else {}
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
 
     enabled_raw = compression.get("enabled", True)
@@ -6639,6 +6642,27 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
         agent.compression_enabled = enabled_raw
     else:
         agent.compression_enabled = str(enabled_raw).lower() in {"true", "1", "yes"}
+
+    agent.codex_responses_native_compaction = is_truthy_value(
+        compression.get("codex_responses_native", False)
+    )
+    native_threshold_raw = compression.get(
+        "codex_responses_compact_threshold", 200_000
+    )
+    try:
+        if isinstance(native_threshold_raw, bool):
+            raise ValueError
+        native_threshold = int(native_threshold_raw)
+        if native_threshold <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid compression.codex_responses_compact_threshold=%r; "
+            "using 200000.",
+            native_threshold_raw,
+        )
+        native_threshold = 200_000
+    agent.codex_responses_compact_threshold = native_threshold
 
     # Absence restores the agent_init/config default (0 = disabled).
     idle_raw = compression.get("idle_compact_after_seconds", 0)

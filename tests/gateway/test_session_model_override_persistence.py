@@ -117,6 +117,9 @@ def test_runner_rehydrates_override_after_restart(store_factory):
             "request_overrides": {
                 "extra_body": {"text": {"verbosity": "low"}},
             },
+            "requested_provider": "custom:chatgpt-tier",
+            "capabilities": {"openai_native_compaction": True},
+            "max_tokens": 32_768,
         },
     ):
         runner._rehydrate_session_model_override(session_key)
@@ -131,6 +134,20 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     assert override["request_overrides"] == {
         "extra_body": {"text": {"verbosity": "low"}},
     }
+    assert override["requested_provider"] == "custom:chatgpt-tier"
+    assert override["capabilities"] == {"openai_native_compaction": True}
+    assert override["max_tokens"] == 32_768
+
+    model, runtime = runner._resolve_session_agent_runtime(
+        session_key=session_key,
+        user_config={"model": {"default": "global-model"}},
+    )
+    assert model == "gpt-5o"
+    assert runtime["requested_provider"] == "custom:chatgpt-tier"
+    assert runtime["capabilities"] == {"openai_native_compaction": True}
+    assert runtime["max_tokens"] == 32_768
+    route = runner._resolve_turn_agent_config("", model, runtime)
+    assert route["runtime"]["capabilities"] == {"openai_native_compaction": True}
 
 
 def test_sanitize_model_override():
