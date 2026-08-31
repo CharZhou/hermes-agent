@@ -1950,9 +1950,6 @@ class GatewaySlashCommandsMixin:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
-                                    request_overrides=getattr(
-                                        result, "request_overrides", None
-                                    ),
                                     capabilities=getattr(
                                         result, "runtime_capabilities", None
                                     ),
@@ -2015,9 +2012,7 @@ class GatewaySlashCommandsMixin:
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
-                            "request_overrides": dict(
-                                getattr(result, "request_overrides", None) or {}
-                            ),
+                            "request_overrides": dict(result.request_overrides or {}),
                             "capabilities": dict(result.runtime_capabilities or {}),
                         }
 
@@ -2273,9 +2268,6 @@ class GatewaySlashCommandsMixin:
                         api_key=result.api_key,
                         base_url=result.base_url,
                         api_mode=result.api_mode,
-                        request_overrides=getattr(
-                            result, "request_overrides", None
-                        ),
                         capabilities=getattr(result, "runtime_capabilities", None),
                     )
                 except Exception as exc:
@@ -2335,9 +2327,7 @@ class GatewaySlashCommandsMixin:
                 "api_key": result.api_key,
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
-                "request_overrides": dict(
-                    getattr(result, "request_overrides", None) or {}
-                ),
+                "request_overrides": dict(result.request_overrides or {}),
                 "capabilities": dict(result.runtime_capabilities or {}),
             }
             if one_turn:
@@ -2349,7 +2339,7 @@ class GatewaySlashCommandsMixin:
             elif hasattr(self, "_pending_one_turn_model_restores"):
                 self._pending_one_turn_model_restores.pop(session_key, None)
 
-            # Write-through the non-secret routing metadata to
+            # Write-through the non-secret parts (model/provider/base_url) to
             # the session store so the override survives a gateway restart.
             # api_key/api_mode are never persisted — they are re-resolved via
             # runtime provider resolution on rehydration.

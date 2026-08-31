@@ -46,7 +46,6 @@ def _make_agent_openrouter():
     agent._fallback_chain = []
     agent._fallback_model = None
     agent._config_context_length = None
-    agent.request_overrides = {"extra_body": {"source_only": True}}
     agent.runtime_capabilities = {"native_compaction": False}
 
     return agent
@@ -101,7 +100,6 @@ def test_openai_client_rebuild_failure_rolls_back_to_original_state():
                 api_key="codex-key-new",
                 base_url="https://chatgpt.com/backend-api/codex/responses",
                 api_mode="chat_completions",
-                request_overrides={"extra_body": {"target_only": True}},
             )
 
     # Core invariant: agent state is unchanged from before the call
@@ -112,7 +110,6 @@ def test_openai_client_rebuild_failure_rolls_back_to_original_state():
     assert agent.api_key == "or-key-original"
     assert agent.client is original_client
     assert agent._client_kwargs == original_kwargs
-    assert agent.request_overrides == {"extra_body": {"source_only": True}}
     assert agent.runtime_capabilities == {"native_compaction": False}
 
 
@@ -202,14 +199,9 @@ def test_successful_switch_still_works_after_rollback_refactor():
             api_key="or-key-new",
             base_url="https://openrouter.ai/api/v1",
             api_mode="chat_completions",
-            request_overrides={"extra_body": {"target_only": True}},
         )
 
     assert agent.model == "openai/gpt-5"
     assert agent.provider == "openrouter"
     assert agent.api_key == "or-key-new"
     assert agent.client is new_client
-    assert agent.request_overrides == {"extra_body": {"target_only": True}}
-    assert agent._primary_runtime["request_overrides"] == {
-        "extra_body": {"target_only": True}
-    }

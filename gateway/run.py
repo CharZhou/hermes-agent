@@ -3143,16 +3143,6 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "capabilities": capabilities,
     }
 
-
-def _deep_merge_request_overrides(
-    base: Optional[dict], override: Optional[dict]
-) -> dict:
-    """Deep-merge request overrides with the second mapping taking precedence."""
-    from hermes_cli.config import _deep_merge
-
-    return _deep_merge(dict(base or {}), dict(override or {}))
-
-
 @dataclasses.dataclass(frozen=True)
 class _GatewayModelContext:
     """Effective gateway model route and context-window resolution."""
@@ -27858,11 +27848,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["max_tokens"] = runtime.get("max_tokens")
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
-                runtime_request_overrides = runtime.get("request_overrides")
-                if isinstance(runtime_request_overrides, dict):
-                    override["request_overrides"] = dict(
-                        runtime_request_overrides
-                    )
             except Exception:
                 logger.debug(
                     "Credential re-resolution failed for persisted override "

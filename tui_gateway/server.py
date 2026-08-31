@@ -6097,7 +6097,6 @@ def _snapshot_agent_model_runtime(agent) -> dict:
         "api_key": getattr(agent, "api_key", ""),
         "base_url": getattr(agent, "base_url", ""),
         "api_mode": getattr(agent, "api_mode", ""),
-        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
     }
 
@@ -6123,7 +6122,6 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             api_key=snapshot.get("api_key", ""),
             base_url=snapshot.get("base_url", ""),
             api_mode=snapshot.get("api_mode", ""),
-            request_overrides=snapshot.get("request_overrides"),
             capabilities=snapshot.get("capabilities"),
         )
 
@@ -6337,8 +6335,7 @@ def _apply_model_switch(
                 api_key=result.api_key,
                 base_url=result.base_url,
                 api_mode=result.api_mode,
-            request_overrides=getattr(result, "request_overrides", None),
-            capabilities=getattr(result, "runtime_capabilities", None),
+                capabilities=getattr(result, "runtime_capabilities", None),
             )
         except Exception as exc:
             # The in-place swap rolled the agent back to the old working
@@ -6385,9 +6382,6 @@ def _apply_model_switch(
             "base_url": result.base_url,
             "api_key": result.api_key,
             "api_mode": result.api_mode,
-            "request_overrides": dict(
-                getattr(result, "request_overrides", {}) or {}
-            ),
         }
     if persist_global:
         _persist_model_switch(result)
@@ -8878,7 +8872,6 @@ def _make_agent(
         override_base_url = model_override.get("base_url")
         override_api_key = model_override.get("api_key")
         override_api_mode = model_override.get("api_mode")
-        override_request_overrides = model_override.get("request_overrides")
         resolve_kwargs = {}
         if str(requested_provider or "").strip().lower() == "custom":
             # Session rows persisted before the custom-provider identity fix
@@ -8921,8 +8914,6 @@ def _make_agent(
                 runtime["api_key"] = override_api_key
             if override_api_mode:
                 runtime["api_mode"] = override_api_mode
-            if isinstance(override_request_overrides, dict):
-                runtime["request_overrides"] = dict(override_request_overrides)
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:
@@ -8965,7 +8956,6 @@ def _make_agent(
             if service_tier_override is not None
             else _load_service_tier()
         ),
-        request_overrides=runtime.get("request_overrides"),
         enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same

@@ -1482,7 +1482,6 @@ def try_recover_primary_transport(
         agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]
         agent.api_mode = rt["api_mode"]
-        agent.request_overrides = dict(rt.get("request_overrides") or {})
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
@@ -1746,7 +1745,6 @@ def restore_primary_runtime(agent) -> bool:
         agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
         agent.api_mode = rt["api_mode"]
-        agent.request_overrides = dict(rt.get("request_overrides") or {})
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
@@ -2915,7 +2913,6 @@ def switch_model(
     api_key='',
     base_url='',
     api_mode='',
-    request_overrides=None,
     capabilities=None,
 ):
     """Switch the model/provider in-place for a live agent.
@@ -3019,9 +3016,6 @@ def switch_model(
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
     # live dict doesn't poison the rollback target.
     _snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
-    _snapshot["request_overrides"] = dict(
-        getattr(agent, "request_overrides", {}) or {}
-    )
     # Snapshot the credential pool reference so a failed client rebuild can
     # restore the original pool (issue #52727: pool reload is part of this
     # switch and must be reversible on rollback).
@@ -3078,8 +3072,6 @@ def switch_model(
                 "refusing to keep the previous provider's endpoint"
             )
         agent.api_mode = api_mode
-        if request_overrides is not None:
-            agent.request_overrides = dict(request_overrides)
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -3357,12 +3349,16 @@ def switch_model(
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
-        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        # Request-level overrides (extra_body etc.) must travel with the
+        # switched-to identity; without this, a post-switch transport
+        # recovery or fallback restore would resurrect the PRE-switch
+        # overrides via the stale init-time snapshot (#75091 seam).
+        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,

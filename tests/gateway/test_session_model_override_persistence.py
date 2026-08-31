@@ -2,7 +2,7 @@
 
 ``GatewayRunner._session_model_overrides`` is in-memory, so before persistence
 a gateway restart silently reverted every session to the global default model.
-The non-secret routing metadata is now written through to the
+The non-secret parts (model/provider/base_url) are now written through to the
 session store (``SessionEntry.model_override`` in sessions.json) and lazily
 rehydrated on first use after a restart, with credentials re-resolved through
 the normal runtime provider resolution.
@@ -33,9 +33,6 @@ OVERRIDE = {
     "api_key": "sk-SUPER-SECRET-do-not-persist",
     "base_url": "https://api.openai.example/v1",
     "api_mode": "responses",
-    "request_overrides": {
-        "extra_body": {"text": {"verbosity": "low"}},
-    },
 }
 
 
@@ -114,9 +111,6 @@ def test_runner_rehydrates_override_after_restart(store_factory):
             "api_mode": "responses",
             "base_url": "https://api.openai.example/v1",
             "provider": "openai",
-            "request_overrides": {
-                "extra_body": {"text": {"verbosity": "low"}},
-            },
             "requested_provider": "custom:chatgpt-tier",
             "capabilities": {"openai_native_compaction": True},
             "max_tokens": 32_768,
@@ -131,9 +125,6 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     # Credentials come from live resolution, never from disk.
     assert override["api_key"] == "sk-fresh-from-keychain"
     assert override["api_mode"] == "responses"
-    assert override["request_overrides"] == {
-        "extra_body": {"text": {"verbosity": "low"}},
-    }
     assert override["requested_provider"] == "custom:chatgpt-tier"
     assert override["capabilities"] == {"openai_native_compaction": True}
     assert override["max_tokens"] == 32_768

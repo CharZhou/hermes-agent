@@ -913,8 +913,7 @@ class AIAgent:
         api_key='',
         base_url='',
         api_mode='',
-            request_overrides=None,
-            capabilities=None,
+        capabilities=None,
     ):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
@@ -925,8 +924,7 @@ class AIAgent:
             api_key,
             base_url,
             api_mode,
-            request_overrides=request_overrides,
-            capabilities=capabilities,
+            capabilities,
         )
 
     def _safe_print(self, *args, **kwargs):

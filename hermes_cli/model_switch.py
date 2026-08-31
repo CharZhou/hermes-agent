@@ -1850,7 +1850,6 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
-    request_overrides = None
     runtime_capabilities: dict[str, bool] = {}
     ollama_headers: dict[str, str] = {}
     validation_headers: dict[str, str] = {}
@@ -1898,7 +1897,6 @@ def switch_model(
                 api_mode = runtime.get("api_mode", "")
                 runtime_capabilities = runtime.get("capabilities") or {}
                 validation_headers = runtime.get("extra_headers") or validation_headers
-                request_overrides = runtime.get("request_overrides")
             except Exception:
                 api_key = _ukey
                 base_url = _user_pdef.base_url
@@ -1918,7 +1916,6 @@ def switch_model(
                 api_mode = runtime.get("api_mode", "")
                 runtime_capabilities = runtime.get("capabilities") or {}
                 validation_headers = runtime.get("extra_headers") or validation_headers
-                request_overrides = runtime.get("request_overrides")
             except Exception as e:
                 return ModelSwitchResult(
                     success=False,
@@ -1980,7 +1977,6 @@ def switch_model(
                 api_mode = runtime.get("api_mode", "")
                 runtime_capabilities = runtime.get("capabilities") or {}
                 validation_headers = runtime.get("extra_headers") or validation_headers
-                request_overrides = runtime.get("request_overrides")
             except Exception:
                 pass
 
