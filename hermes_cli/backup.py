@@ -22,7 +22,7 @@ import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import (
     _get_platform_default_hermes_home,
@@ -107,6 +107,34 @@ _EXCLUDED_DIRS = {
     ".ruff_cache",
 }
 
+# Hermes-managed runtime downloads that only exist at the top of a profile
+# home: local GGUF models, llama.cpp runtime binaries, and the managed Node
+# installation. All of them are re-downloaded on demand (model catalog,
+# runtime bootstrap, node installer) and routinely reach tens to hundreds of
+# GB, so zipping them turns a backup into an hours-long compress of
+# incompressible weights (the "backup stuck at N files" symptom). Matched
+# ONLY at the root of HERMES_HOME and at ``profiles/<name>/`` — a deeper
+# directory that happens to share one of these names (a skill's ``models/``,
+# a user checkout) is user data and stays in the backup.
+_EXCLUDED_ROOT_DIRS = {
+    "models",
+    "runtimes",
+    "node",
+}
+
+
+def _in_excluded_root_dir(rel_path: Path) -> bool:
+    """True when *rel_path* (relative to HERMES_HOME) is, or sits inside, a
+    Hermes-managed runtime tree at the top of a profile home."""
+    parts = rel_path.parts
+    if not parts:
+        return False
+    if parts[0] in _EXCLUDED_ROOT_DIRS:
+        return True
+    # Named profiles are profile homes too: profiles/<name>/models etc.
+    return len(parts) >= 3 and parts[0] == "profiles" and parts[2] in _EXCLUDED_ROOT_DIRS
+
+
 # File-name suffixes to skip
 _EXCLUDED_SUFFIXES = (
     ".pyc",
@@ -127,6 +155,16 @@ _EXCLUDED_NAMES = {
     "gateway.pid",
     "cron.pid",
 }
+
+# File-name prefixes to skip. The desktop updater's pre-flight drops
+# ``state.db.pre-update-emergency-<timestamp>.bak`` at the HERMES_HOME root
+# (apps/desktop/electron/main.ts preflightStateDb) — a backup artifact in
+# the same class as ``backups/`` and ``state-snapshots/``, so a full backup
+# must not re-ship it. Matched by prefix because the name carries a
+# timestamp; a plain ``.bak`` suffix rule would drop user files.
+_EXCLUDED_PREFIXES = (
+    "state.db.pre-update-emergency-",
+)
 
 # File names that ``hermes import`` must never overwrite, matched by basename so
 # they're caught for the root profile (``gateway_state.json``) and for named
@@ -335,6 +373,9 @@ def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
 
+    if _in_excluded_root_dir(rel_path):
+        return True
+
     for part in parts:
         if part not in _EXCLUDED_DIRS:
             continue
@@ -348,6 +389,9 @@ def _should_exclude(rel_path: Path) -> bool:
     name = rel_path.name
 
     if name in _EXCLUDED_NAMES:
+        return True
+
+    if name.startswith(_EXCLUDED_PREFIXES):
         return True
 
     if name.endswith(_EXCLUDED_SUFFIXES):
@@ -370,6 +414,48 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
         return abs_path.resolve() == out_path.resolve()
     except (OSError, ValueError):
         return False
+
+
+def _iter_backup_files(
+    hermes_root: Path,
+    out_path: Path,
+    skipped_dirs: Optional[set] = None,
+):
+    """Yield ``(abs_path, rel_path)`` for every file a full backup should hold.
+
+    The one owner of the backup walk policy: directory pruning (so os.walk
+    never descends a multi-GB excluded tree), the root-only ``hermes-agent``
+    carve-out, profile-home-root runtime trees, and the per-file exclusion
+    rules — shared by the manual ``hermes backup`` path and the automatic
+    pre-update/pre-migration path so the two can never drift.
+
+    ``skipped_dirs``, when given, collects pruned directories (root-relative,
+    as strings) for the end-of-run summary.
+    """
+    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
+        rel_dir = Path(dirpath).relative_to(hermes_root)
+
+        # ``hermes-agent`` is only pruned at the root level; nested dirs
+        # with the same name (e.g. in skills/) must be preserved. Managed
+        # runtime trees (models/, runtimes/, node/) are pruned only at a
+        # profile-home root — see _EXCLUDED_ROOT_DIRS.
+        is_root = rel_dir == Path(".")
+        orig_dirnames = dirnames[:]
+        dirnames[:] = [
+            d for d in dirnames
+            if (d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root))
+            and not _in_excluded_root_dir(rel_dir / d)
+        ]
+        if skipped_dirs is not None:
+            for removed in set(orig_dirnames) - set(dirnames):
+                skipped_dirs.add(str(rel_dir / removed))
+
+        for fname in filenames:
+            rel = rel_dir / fname
+            fpath = hermes_root / rel
+            if _should_skip_backup_file(fpath, rel, out_path):
+                continue
+            yield fpath, rel
 
 
 # ---------------------------------------------------------------------------
@@ -869,33 +955,10 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     scan_started = time.monotonic()
     logger.info("backup phase=scan status=started")
     print(f"Scanning {display_hermes_home()} ...")
-    files_to_add: list[tuple[Path, Path]] = []  # (absolute, relative)
-    skipped_dirs = set()
-
-    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
-        dp = Path(dirpath)
-        rel_dir = dp.relative_to(hermes_root)
-
-        # Prune excluded directories in-place so os.walk doesn't descend
-        # ``hermes-agent`` is only pruned at the root level; nested dirs
-        # with the same name (e.g. in skills/) must be preserved.
-        is_root = rel_dir == Path(".")
-        orig_dirnames = dirnames[:]
-        dirnames[:] = [
-            d for d in dirnames
-            if d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root)
-        ]
-        for removed in set(orig_dirnames) - set(dirnames):
-            skipped_dirs.add(str(rel_dir / removed))
-
-        for fname in filenames:
-            fpath = dp / fname
-            rel = fpath.relative_to(hermes_root)
-
-            if _should_skip_backup_file(fpath, rel, out_path):
-                continue
-
-            files_to_add.append((fpath, rel))
+    skipped_dirs: set = set()
+    files_to_add: list[tuple[Path, Path]] = list(
+        _iter_backup_files(hermes_root, out_path, skipped_dirs)
+    )
 
     # External memory-provider state (e.g. ~/.honcho, ~/.hindsight) lives
     # outside HERMES_HOME, so the walk above never sees it. Ask the active
@@ -2059,6 +2122,172 @@ def create_pre_update_snapshots_all_profiles(
     return results
 
 
+# Config paths that the update flow must never change (#64160): the model
+# routing keys and the Mixture-of-Agents section are consumed machine-wide
+# (gateway, cron, desktop), so an update/repair cycle that rewrites them
+# silently redirects paid inference. Each entry is a dotted path into the raw
+# config.yaml document; a single-element tuple protects the whole section.
+_PROTECTED_CONFIG_PATHS: Tuple[Tuple[str, ...], ...] = (
+    ("model", "provider"),
+    ("model", "default"),
+    ("model", "base_url"),
+    ("model", "api_key"),
+    ("moa",),
+)
+
+
+def _read_raw_yaml_dict(path: Path) -> Optional[Dict[str, Any]]:
+    """Parse ``path`` as a YAML mapping. ``None`` = missing/unreadable/non-dict."""
+    if not path.is_file():
+        return None
+    try:
+        import yaml
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _get_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...]) -> Any:
+    node: Any = data
+    for key in dotted:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _set_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...], value: Any) -> None:
+    node = data
+    for key in dotted[:-1]:
+        child = node.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            node[key] = child
+        node = child
+    node[dotted[-1]] = value
+
+
+def restore_config_model_settings_if_rewritten(
+    snapshot_id: str,
+    hermes_home: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Safety net for silent config.yaml model/MoA loss across ``hermes update``.
+
+    Desktop update/repair cycles have been observed to rewrite user-set
+    ``model.provider``/``model.default`` and drop the ``moa:`` section
+    entirely (issue #64160; the macOS repair/relaunch variant rewrote a
+    pinned ``model.default`` to a transient composer pick). These keys are
+    consumed by the gateway and unattended cron jobs too, so a rewrite
+    silently changes paid inference behavior machine-wide.
+
+    Mirrors :func:`restore_cron_jobs_if_emptied`: compare the *current*
+    config against the pre-update snapshot taken minutes earlier by this
+    same update run, and restore only the protected keys — never the whole
+    file — when a value the user had set was changed or dropped. Everything
+    the update legitimately wrote (version stamps, new sections) is left in
+    place.
+
+    Args:
+        snapshot_id: The pre-update quick-snapshot id (from
+            :func:`create_quick_snapshot`).
+        hermes_home: Override for the Hermes home directory (tests/siblings).
+
+    Returns:
+        ``None`` when no action was taken (the common, healthy path). On a
+        successful restore, ``{"restored": True, "keys": [...],
+        "snapshot_id": ...}`` so the caller can warn the user.
+    """
+    if not snapshot_id:
+        return None
+
+    home = hermes_home or get_hermes_home()
+    live_path = home / "config.yaml"
+    snap_path = _quick_snapshot_root(home) / snapshot_id / "config.yaml"
+
+    snap = _read_raw_yaml_dict(snap_path)
+    if not snap:
+        return None  # no snapshot copy — nothing to compare against
+    live = _read_raw_yaml_dict(live_path)
+    if live is None:
+        # Missing or unparseable live config is a different failure mode the
+        # user should see rather than have papered over (matches the cron net).
+        return None
+
+    restored_keys: list[str] = []
+    for dotted in _PROTECTED_CONFIG_PATHS:
+        snap_val = _get_config_path_value(snap, dotted)
+        if snap_val in (None, "", {}, []):
+            continue  # user never set it — nothing to protect
+        live_val = _get_config_path_value(live, dotted)
+        if live_val == snap_val:
+            continue
+        _set_config_path_value(live, dotted, snap_val)
+        restored_keys.append(".".join(dotted))
+
+    if not restored_keys:
+        return None
+
+    try:
+        from utils import atomic_yaml_write
+
+        atomic_yaml_write(live_path, live)
+    except (OSError, PermissionError) as exc:
+        logger.error(
+            "config.yaml model settings were rewritten during update but "
+            "auto-restore failed: %s",
+            exc,
+        )
+        return None
+
+    logger.warning(
+        "Restored user config value(s) %s from pre-update snapshot %s — "
+        "the update flow rewrote them (#64160)",
+        ", ".join(restored_keys),
+        snapshot_id,
+    )
+    return {"restored": True, "keys": restored_keys, "snapshot_id": snapshot_id}
+
+
+def restore_config_model_settings_all_profiles(
+    profile_snapshots: Dict[str, str],
+    invoking_home: Optional[Path] = None,
+) -> list[Dict[str, Any]]:
+    """Run the config model-settings safety net for every sibling profile.
+
+    Same contract as :func:`restore_cron_jobs_all_profiles`: each profile's
+    live ``config.yaml`` is compared against ITS OWN same-generation
+    pre-update snapshot. Returns one result dict per restored profile, each
+    with a ``profile`` key added. Never raises.
+    """
+    restored: list[Dict[str, Any]] = []
+    if not profile_snapshots:
+        return restored
+    home = invoking_home or get_hermes_home()
+    by_name = dict(_sibling_profile_homes(home))
+    for name, snap_id in profile_snapshots.items():
+        profile_home = by_name.get(name)
+        if profile_home is None:
+            continue
+        try:
+            result = restore_config_model_settings_if_rewritten(
+                snap_id, hermes_home=profile_home
+            )
+        except Exception as exc:
+            logger.debug(
+                "Config model-settings restore check for profile %s failed: %s",
+                name,
+                exc,
+            )
+            continue
+        if result:
+            result["profile"] = name
+            restored.append(result)
+    return restored
+
+
 def restore_cron_jobs_all_profiles(
     profile_snapshots: Dict[str, str],
     invoking_home: Optional[Path] = None,
@@ -2162,24 +2391,8 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     """
     scan_started = time.monotonic()
     logger.info("automatic backup phase=scan status=started")
-    files_to_add: list[tuple[Path, Path]] = []
     try:
-        for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
-            dp = Path(dirpath)
-            # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
-
-            for fname in filenames:
-                fpath = dp / fname
-                try:
-                    rel = fpath.relative_to(hermes_root)
-                except ValueError:
-                    continue
-
-                if _should_skip_backup_file(fpath, rel, out_path):
-                    continue
-
-                files_to_add.append((fpath, rel))
+        files_to_add = list(_iter_backup_files(hermes_root, out_path))
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None

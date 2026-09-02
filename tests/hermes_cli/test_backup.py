@@ -158,6 +158,94 @@ class TestShouldExclude:
         # The .db itself is still included (and safe-copied separately)
         assert not _should_exclude(Path("state.db"))
 
+    def test_excludes_managed_runtime_trees_at_root(self):
+        """models/, runtimes/, and node/ at a profile-home root hold
+        re-downloadable GGUF weights and runtime binaries that reach
+        hundreds of GB — zipping them is the 20-minute-hang symptom."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("models/Qwen3.6-27B-Q4_K_M.gguf"))
+        assert _should_exclude(Path("models/assets/mmproj.gguf"))
+        assert _should_exclude(Path("runtimes/llamacpp/b10362/cuda/ggml-cuda.dll"))
+        assert _should_exclude(Path("node/node.exe"))
+        # Named profiles download their own copies.
+        assert _should_exclude(Path("profiles/clean/models/big.gguf"))
+        assert _should_exclude(Path("profiles/clean/runtimes/llamacpp/x.dll"))
+
+    def test_keeps_nested_dirs_named_like_runtime_trees(self):
+        """A deeper directory that happens to be called models/ or node/ is
+        user data (a skill's assets, project files) and must survive."""
+        from hermes_cli.backup import _should_exclude
+        assert not _should_exclude(Path("skills/mlops/models/notes.md"))
+        assert not _should_exclude(Path("scratch/node/index.js"))
+        assert not _should_exclude(Path("profiles/clean/skills/x/models/a.txt"))
+
+    def test_excludes_desktop_emergency_state_db_baks(self):
+        """The desktop updater's pre-flight drops timestamped
+        state.db.pre-update-emergency-*.bak files at the HERMES_HOME root —
+        backup artifacts in the same class as backups/, so a full backup
+        must not re-ship them."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(
+            Path("state.db.pre-update-emergency-2026-08-15T04-55-33-619Z.bak")
+        )
+        assert _should_exclude(
+            Path("profiles/coder/state.db.pre-update-emergency-2026-08-15T04-55-33-619Z.bak")
+        )
+        # Other .bak files are user data and stay.
+        assert not _should_exclude(Path("config.yaml.bak"))
+
+
+# ---------------------------------------------------------------------------
+# _iter_backup_files tests
+# ---------------------------------------------------------------------------
+
+class TestIterBackupFiles:
+    def test_manual_and_automatic_paths_share_one_walk(self, tmp_path):
+        """Both backup entry points must select the identical file set.
+
+        Before the walks were unified, the automatic pre-update path pruned
+        ``hermes-agent`` at ANY depth, silently dropping nested skill dirs
+        like ``skills/autonomous-ai-agents/hermes-agent/`` that the manual
+        path preserved. One shared iterator makes that drift impossible;
+        this test pins the contract."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+
+        # The case the old automatic walk got wrong: a nested dir named
+        # hermes-agent holding real skill content.
+        nested = root / "skills" / "autonomous-ai-agents" / "hermes-agent"
+        nested.mkdir(parents=True)
+        (nested / "SKILL.md").write_text("# nested skill\n")
+
+        # A root-level managed runtime tree that both paths must prune.
+        (root / "models").mkdir()
+        (root / "models" / "big.gguf").write_bytes(b"\x00" * 64)
+
+        out_path = tmp_path / "out.zip"
+        selected = {str(rel) for _, rel in _iter_backup_files(root, out_path)}
+
+        rel_nested = str(Path("skills/autonomous-ai-agents/hermes-agent/SKILL.md"))
+        assert rel_nested in selected
+        assert str(Path("models/big.gguf")) not in selected
+        assert not any(s.startswith("hermes-agent") for s in selected)
+
+    def test_skipped_dirs_collected_for_summary(self, tmp_path):
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+        (root / "models").mkdir()
+        (root / "models" / "big.gguf").write_bytes(b"\x00")
+
+        skipped: set = set()
+        list(_iter_backup_files(root, tmp_path / "out.zip", skipped))
+        assert "models" in skipped
+        assert "hermes-agent" in skipped
+
 
 # ---------------------------------------------------------------------------
 # Backup tests
@@ -1775,6 +1863,161 @@ class TestRestoreCronJobsIfEmptied:
         # The live file now has all 19 jobs back.
         restored = json.loads(jobs_path.read_text())
         assert len(restored["jobs"]) == 19
+
+
+# ---------------------------------------------------------------------------
+# config.yaml model/provider + MoA auto-restore after silent update rewrite
+# (issue #64160)
+# ---------------------------------------------------------------------------
+
+class TestRestoreConfigModelSettingsIfRewritten:
+    """Desktop update/repair cycles have rewritten user-set model.provider /
+    model.default and dropped the moa: section (#64160).
+    `restore_config_model_settings_if_rewritten` is the post-update safety net
+    that restores only the protected keys from the pre-update snapshot."""
+
+    USER_CONFIG = (
+        "_config_version: 39\n"
+        "model:\n"
+        "  provider: custom\n"
+        "  default: zyphra/zamba-3-large\n"
+        "  base_url: https://api.zyphra.example/v1\n"
+        "moa:\n"
+        "  enabled: true\n"
+        "  presets:\n"
+        "    council:\n"
+        "      aggregator: {provider: custom, model: zyphra/zamba-3-large}\n"
+        "custom_unknown_key:\n"
+        "  hello: world\n"
+    )
+
+    def _make_snapshot(self, hermes_home: Path, label="pre-update"):
+        from hermes_cli.backup import create_quick_snapshot
+        return create_quick_snapshot(label=label, hermes_home=hermes_home, keep=5)
+
+    def _seed(self, hermes_home: Path) -> Path:
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        cfg = hermes_home / "config.yaml"
+        cfg.write_text(self.USER_CONFIG, encoding="utf-8")
+        return cfg
+
+    def test_restores_rewritten_provider_and_dropped_moa(self, tmp_path):
+        import yaml
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home)
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # The update flow rewrites config.yaml with defaults: provider flips
+        # to deepseek, MoA section is gone (the #64160 field report).
+        cfg.write_text(
+            "_config_version: 39\nmodel:\n  provider: deepseek\n  default: deepseek-chat\n",
+            encoding="utf-8",
+        )
+
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is not None
+        assert result["restored"] is True
+        assert result["snapshot_id"] == snap_id
+        assert "model.provider" in result["keys"]
+        assert "model.default" in result["keys"]
+        assert "moa" in result["keys"]
+
+        after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        assert after["model"]["provider"] == "custom"
+        assert after["model"]["default"] == "zyphra/zamba-3-large"
+        assert after["model"]["base_url"] == "https://api.zyphra.example/v1"
+        assert after["moa"]["enabled"] is True
+        assert after["moa"]["presets"]["council"]["aggregator"]["model"] == (
+            "zyphra/zamba-3-large"
+        )
+
+    def test_noop_when_config_untouched(self, tmp_path):
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home)
+        snap_id = self._make_snapshot(hermes_home)
+        before = cfg.read_text(encoding="utf-8")
+
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is None
+        assert cfg.read_text(encoding="utf-8") == before
+
+    def test_preserves_legitimate_update_writes(self, tmp_path):
+        """Only protected keys are restored — a version bump or a new section
+        the migration legitimately wrote must survive the restore."""
+        import yaml
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home)
+        snap_id = self._make_snapshot(hermes_home)
+
+        cfg.write_text(
+            "_config_version: 40\n"      # legitimate migration bump
+            "new_section:\n  added: true\n"  # legitimate new default
+            "model:\n  provider: deepseek\n",  # illegitimate rewrite
+            encoding="utf-8",
+        )
+
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is not None
+        after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        assert after["model"]["provider"] == "custom"          # restored
+        assert after["_config_version"] == 40                   # kept
+        assert after["new_section"] == {"added": True}          # kept
+
+    def test_noop_when_user_never_set_protected_keys(self, tmp_path):
+        """A config that never had model.provider/moa set gets no restore even
+        if the update writes those keys fresh — nothing of the user's was lost."""
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        cfg = hermes_home / "config.yaml"
+        cfg.write_text("_config_version: 39\nagent: {}\n", encoding="utf-8")
+        snap_id = self._make_snapshot(hermes_home)
+
+        cfg.write_text(
+            "_config_version: 39\nmodel:\n  provider: deepseek\n", encoding="utf-8"
+        )
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is None
+
+    def test_noop_on_unreadable_live_config(self, tmp_path):
+        """An unparseable live config is a different failure the user must see;
+        the safety net leaves it alone (mirrors the cron net's posture)."""
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        cfg = self._seed(hermes_home)
+        snap_id = self._make_snapshot(hermes_home)
+
+        cfg.write_text(": not [valid yaml", encoding="utf-8")
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is None
+        assert cfg.read_text(encoding="utf-8") == ": not [valid yaml"
+
+    def test_noop_without_snapshot_id(self, tmp_path):
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        assert restore_config_model_settings_if_rewritten(
+            "", hermes_home=tmp_path / ".hermes"
+        ) is None
+
 
 
 
