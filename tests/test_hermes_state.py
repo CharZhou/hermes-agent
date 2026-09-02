@@ -1775,7 +1775,7 @@ class TestSchemaInit:
         assert binding["user_id"] == "208214988"
         assert binding["session_key"] == "telegram:dm:208214988:thread:17585"
         assert binding["session_id"] == "topic-session"
-        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        assert db.get_meta("telegram_dm_topic_schema_version") == "3"
         db.close()
 
 
@@ -2751,6 +2751,24 @@ class TestCompressionChainProjection:
         assert db.get_compression_tip("root1") == "tip1"
         assert db.get_compression_tip("mid1") == "tip1"
         assert db.get_compression_tip("tip1") == "tip1"
+
+    def test_list_serves_full_lineage_ids_for_projected_rows(self, db):
+        """The projected tip row must carry every chain id. Root and tip
+        alone are not enough client-side: a persisted tile or route can hold
+        a MIDDLE segment's id (it was the tip when opened), and without the
+        intermediates that surface cannot prove it names this conversation —
+        which is how one chat ends up open twice after a compaction."""
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.create_session("solo", "cli")
+        db.append_message("solo", "user", "standalone")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        assert tip_row["_lineage_ids"] == ["root1", "mid1", "tip1"]
+        solo_row = next(s for s in sessions if s["id"] == "solo")
+        assert solo_row.get("_lineage_ids") is None
 
 
 

@@ -1134,6 +1134,17 @@ def _strip_stale_tool_call_markers(
     return messages
 
 
+def _normalize_telegram_topic_profile_name(profile_name: Optional[str] = None) -> str:
+    """Normalize profile namespace for Telegram topic-mode tables.
+
+    Empty / missing values map to ``\"default\"`` so non-multiplexed gateways
+    keep a single namespace. Multiplexed callers must pass the *routed*
+    profile (``source.profile``), never the process-global active profile.
+    """
+    name = str(profile_name or "").strip()
+    return name if name else "default"
+
+
 def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
     """Format a user-facing 'session DB unavailable' message with cause.
 
@@ -2264,6 +2275,7 @@ def classify_persistence_error(exc_or_str) -> str:
     if isinstance(exc_or_str, CompressionSessionBusyError):
         return "compression"
     if isinstance(exc_or_str, StateDbReplacedError):
+        # Includes DeletedWalGenerationError (subclass).
         return "replaced"
     if isinstance(exc_or_str, StateDbCorruptError):
         return "corrupt"
@@ -2275,6 +2287,8 @@ def classify_persistence_error(exc_or_str) -> str:
     if "being compressed" in text or "compression lease" in text:
         return "compression"
     if "was replaced underneath" in text:
+        return "replaced"
+    if "deleted state.db-wal" in text or "deleted state.db-shm" in text:
         return "replaced"
     # Structural corruption BEFORE the lock and disk buckets: "database disk
     # image is malformed" contains "disk" (and some wrapped corruption
@@ -4351,6 +4365,23 @@ class StateDbReplacedError(RuntimeError):
     """
 
 
+class DeletedWalGenerationError(StateDbReplacedError):
+    """A live process holds a deleted state.db-wal / -shm generation.
+
+    Opening or writing through this handle would mint a second WAL inode
+    (or keep committing on the orphan) — the split-brain that produces
+    intermittent SQLITE_CORRUPT / SQLITE_IOERR. Stop the writers; do not
+    unlink the WAL yourself. ``database.journal_mode: delete`` is operator
+    containment, not a default change.
+
+    Subclasses :class:`StateDbReplacedError` so every downstream consumer
+    that already stops SQLite writes and diverts pending transcripts on a
+    replaced store (gateway retry queue, run_agent flush) handles the split
+    WAL generation identically — the correct response is the same: stop
+    writing, preserve the transcript tail on disk.
+    """
+
+
 # SQLite header: 4-byte big-endian application_id at offset 68. Distinct from
 # inode: ``cp`` onto the same path keeps st_ino and truncates+rewrites.
 _STATE_DB_APPLICATION_ID_OFFSET = 68
@@ -4360,6 +4391,14 @@ _STATE_DB_REPLACED_MSG = (
     "writes to this file. Divert transcripts to sessions/<id>.jsonl (and the "
     "gateway pending_messages spool) and restore or reopen after operator "
     "intervention."
+)
+_DELETED_WAL_GENERATION_MSG = (
+    "FATAL: a live process holds a deleted state.db-wal or state.db-shm "
+    "inode while the path names a different (or missing) generation. "
+    "Refusing to open or write so a second WAL cannot be minted. "
+    "Stop the gateway, dashboard, and cron writers that hold the deleted "
+    "sidecar, then reopen. Do not delete the WAL yourself. "
+    "database.journal_mode: delete is operator containment, not a new default."
 )
 
 
@@ -4522,6 +4561,86 @@ def _stat_db_file_identity(path: Path) -> "Optional[tuple]":
     if not st.st_dev or not st.st_ino:
         return None
     return (st.st_dev, st.st_ino)
+
+
+def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
+    """Snapshot ``(st_dev, st_ino)`` for existing WAL/SHM sidecars."""
+    identities: Dict[str, tuple] = {}
+    base = os.fspath(db_path)
+    for suffix in ("-wal", "-shm"):
+        ident = _stat_db_file_identity(Path(base + suffix))
+        if ident is not None:
+            identities[suffix] = ident
+    return identities
+
+
+def _canonical_sqlite_path(path: str) -> str:
+    """Normalize a /proc fd target, stripping the Linux `` (deleted)`` suffix."""
+    return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
+
+
+def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
+    base = os.path.abspath(os.fspath(db_path))
+    return {
+        _canonical_sqlite_path(base + "-wal"),
+        _canonical_sqlite_path(base + "-shm"),
+    }
+
+
+def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
+    """Return processes holding an unlinked ``state.db-wal`` / ``-shm``.
+
+    Linux-only (``/proc/<pid>/fd`` readlink). Windows and other hosts
+    return ``[]`` — Windows cannot unlink a sidecar another process still
+    holds, and macOS does not use the `` (deleted)`` suffix.
+
+    The scan includes this process: on the SessionDB open/write refuse
+    path, the in-process writer that still holds the orphan inode is the
+    one that must not mint a replacement WAL (and must stop committing).
+    ``_foreign_state_db_holders`` keeps skipping this PID for FTS
+    maintenance so a process does not block its own optional repair.
+    """
+    if not sys.platform.startswith("linux"):
+        return []
+
+    holders: List[Tuple[int, str]] = []
+    watched = _watched_sqlite_sidecar_paths(db_path)
+    try:
+        for pid_str in os.listdir("/proc"):
+            if not pid_str.isdigit():
+                continue
+            pid = int(pid_str)
+            fd_dir = f"/proc/{pid}/fd"
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    target = os.readlink(f"{fd_dir}/{fd}")
+                except OSError:
+                    continue
+                if " (deleted)" not in target:
+                    continue
+                if _canonical_sqlite_path(target) in watched:
+                    holders.append((pid, target))
+    except Exception as exc:
+        logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
+        return holders
+    return holders
+
+
+def refuse_deleted_wal_generation(db_path) -> None:
+    """Raise if any process holds a deleted WAL/SHM generation for *db_path*.
+
+    Called *before* ``sqlite3.connect`` so a second opener cannot mint a
+    replacement WAL inode while a live writer still holds the orphan.
+    """
+    holders = iter_deleted_sqlite_sidecar_holders(db_path)
+    if not holders:
+        return
+    logger.error(_DELETED_WAL_GENERATION_MSG)
+    raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
 
 
 # ── Process-wide shared SessionDB registry (#90837) ──
@@ -5289,6 +5408,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # restored file (see StateDbCorruptError).
         self._db_corrupt = False
         self._db_corrupt_reason = ""
+        self._db_sidecar_identity: Dict[str, tuple] = {}
+        self._db_wal_generation_lost = False
         # One-shot guard for the usermerge-floor config write on the
         # incremental FTS merge cadence (see _merge_fts_incrementally).
         self._fts_usermerge_floor_applied = False
@@ -5440,6 +5561,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         raise sqlite3.DatabaseError(msg)
 
             def _connect_and_init():
+                # Refuse before sqlite3.connect (under the startup lock) so we
+                # cannot mint a replacement WAL while a live writer still
+                # holds a deleted sidecar inode.
+                refuse_deleted_wal_generation(self.db_path)
                 self._conn = _connect_tracked_db(
                     str(self.db_path),
                     check_same_thread=False,
@@ -5839,6 +5964,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 f"structural corruption; refusing to reopen for a {context} "
                 "after close(). "
             )
+        if self._db_wal_generation_lost or self._wal_generation_was_lost():
+            self._halt_deleted_wal_generation()
         logger.warning(
             "state.db connection for %s was closed while a %s was still in "
             "flight — reopening (teardown/worker race, #94736)",
@@ -6346,6 +6473,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def _record_db_file_identity(self) -> None:
         """Snapshot inode plus the on-disk generation header when present."""
         self._db_file_identity = _stat_db_file_identity(self.db_path)
+        self._db_sidecar_identity = _stat_sqlite_sidecar_identity(self.db_path)
         disk_id = _read_sqlite_application_id(self.db_path)
         if disk_id:
             self._db_file_application_id = disk_id
@@ -6380,11 +6508,71 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         logger.error(_STATE_DB_REPLACED_MSG)
         raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
 
+    def _wal_generation_was_lost(self) -> bool:
+        """True when the WAL/SHM generation this instance opened is gone.
+
+        Steady state (a sidecar generation is recorded): pure stat — a
+        recorded inode that is missing or replaced by a new file at the same
+        path means the generation split. No /proc walk on healthy writes.
+
+        Empty-identity state (fresh DB whose WAL appears only after open, or
+        identity cleared by a clean ``close()``): fall back to a
+        ``/proc/self/fd`` deleted-fd probe, and adopt the current sidecars as
+        this handle's generation once the probe comes back clean. The full
+        ``/proc/*/fd`` walk is reserved for
+        :func:`refuse_deleted_wal_generation` on open, where we must see
+        *foreign* deleted holders before ``sqlite3.connect`` mints a new WAL.
+        """
+        recorded = self._db_sidecar_identity or {}
+        base = os.fspath(self.db_path)
+        if recorded:
+            for suffix, recorded_ident in recorded.items():
+                current = _stat_db_file_identity(Path(base + suffix))
+                if current is None or current != recorded_ident:
+                    return True
+            return False
+        if not self._wal_active:
+            # No WAL on this handle (journal_mode=delete/truncate fallback):
+            # there is no sidecar generation to lose, and probing every write
+            # would put a /proc walk on the hot path of exactly the
+            # delete-mode deployments the field report used as containment.
+            return False
+        if sys.platform.startswith("linux"):
+            watched = _watched_sqlite_sidecar_paths(self.db_path)
+            fd_dir = f"/proc/{os.getpid()}/fd"
+            try:
+                for fd in os.listdir(fd_dir):
+                    try:
+                        target = os.readlink(f"{fd_dir}/{fd}")
+                    except OSError:
+                        continue
+                    if " (deleted)" in target and _canonical_sqlite_path(target) in watched:
+                        return True
+            except OSError:
+                return False
+        # Probe clean (or unavailable on this platform): adopt whatever
+        # sidecar generation exists now so subsequent writes use the cheap
+        # stat check.
+        current_identity = _stat_sqlite_sidecar_identity(self.db_path)
+        if current_identity:
+            self._db_sidecar_identity = current_identity
+        return False
+
+    def _halt_deleted_wal_generation(self) -> None:
+        """Stop writes; do not mint or keep committing on a split WAL."""
+        self._db_wal_generation_lost = True
+        logger.error(_DELETED_WAL_GENERATION_MSG)
+        raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
+
     def _raise_if_db_replaced(self) -> None:
         if self._db_replaced:
             raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
+        if self._db_wal_generation_lost:
+            raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
         if self._db_file_was_replaced():
             self._halt_db_replaced()
+        if self._wal_generation_was_lost():
+            self._halt_deleted_wal_generation()
 
     @classmethod
     def _is_structural_corruption_error(cls, exc: BaseException) -> bool:
@@ -6533,15 +6721,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if psutil is None:
             return [(-1, "open-file scan unavailable")]
 
-        def _canonical(path: str) -> str:
-            clean = path.removesuffix(" (deleted)")
-            return os.path.normcase(os.path.abspath(clean))
-
         db_path = os.path.abspath(os.fspath(self.db_path))
         watched = {
-            _canonical(db_path),
-            _canonical(db_path + "-wal"),
-            _canonical(db_path + "-shm"),
+            _canonical_sqlite_path(db_path),
+            _canonical_sqlite_path(db_path + "-wal"),
+            _canonical_sqlite_path(db_path + "-shm"),
         }
         holders: List[Tuple[int, str]] = []
 
@@ -6580,7 +6764,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                             target = os.readlink(f"{fd_dir}/{fd}")
                         except OSError:
                             continue
-                        if _canonical(target) in watched:
+                        if _canonical_sqlite_path(target) in watched:
                             holders.append((pid, target))
             except Exception as exc:
                 logger.warning(
@@ -6605,7 +6789,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # Linux-specific (systemd units running as root).
                 for opened in info.get("open_files") or ():
                     path = getattr(opened, "path", "")
-                    if path and _canonical(path) in watched:
+                    if path and _canonical_sqlite_path(path) in watched:
                         holders.append((pid, path))
         except Exception as exc:
             logger.warning(
@@ -6690,6 +6874,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._raise_if_db_corrupt()
         if self._db_replaced or self._db_file_was_replaced():
             self._halt_db_replaced()
+        if self._db_wal_generation_lost or self._wal_generation_was_lost():
+            self._halt_deleted_wal_generation()
 
         try:
             with self._lock:
@@ -6878,6 +7064,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         )
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
+                # A clean close of the last connection lets SQLite unlink the
+                # WAL/SHM sidecars — a legitimate end of this handle's sidecar
+                # generation, not a split (#94736 late writes must still
+                # self-heal). Drop the recorded generation so a teardown-race
+                # reopen re-adopts whatever exists then instead of halting.
+                self._db_sidecar_identity = {}
 
     def __del__(self) -> None:
         """Safety net: close the connection if the caller forgot.
@@ -10866,8 +11058,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # Bot Mode's forever-chat registry: the session titled exactly this, on a
     # bot's profile, IS the bot's canonical chat — resolved by exact-title
     # lookup on every open (no session-id pointer exists). The title is the
-    # identity, which is why _set_session_title refuses user renames of a
-    # hidden row holding it (#92473).
+    # identity, which is why _set_session_title refuses renames of a hidden
+    # row holding it (#92473).
     CANONICAL_BOT_CHAT_TITLE = "Bot Chat"
 
     @classmethod
@@ -10984,7 +11176,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         stored title has strictly lower authority, so the instant ``derived``
         title upgrades to ``llm`` exactly once and neither can ever overwrite a
         name the user typed. Re-running the titler on an already-``llm`` row is
-        a no-op, which is what stops a session renaming itself.
+        a no-op, which is what stops a session renaming itself. The one thing
+        no writer may do is move a hidden canonical Bot Chat off its title.
 
         The read and the write are one compare-and-swap inside a single
         transaction, so a manual ``/title`` racing an in-flight generation
@@ -11009,18 +11202,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # surface funnels through (gateway session.title, /title, CLI
             # rename, REST). Hidden is the discriminator: canonical chats are
             # born hidden; an ordinary visible session a user happens to call
-            # "Bot Chat" stays freely renameable.
+            # "Bot Chat" stays freely renameable. Provenance-blind: an
+            # automatic llm write outranks a derived title, so the auto-titler
+            # would otherwise rename the row too (#99517) — it no-ops instead.
             if (
-                is_user
-                and (current["title"] or "") == self.CANONICAL_BOT_CHAT_TITLE
+                (current["title"] or "") == self.CANONICAL_BOT_CHAT_TITLE
                 and bool(current["hidden"])
                 and title != self.CANONICAL_BOT_CHAT_TITLE
             ):
-                raise ValueError(
-                    "This is the bot's canonical Bot Chat — its name is its "
-                    "identity, and renaming it would orphan the conversation. "
-                    "To start fresh, create a new bot instead."
-                )
+                if is_user:
+                    raise ValueError(
+                        "This is the bot's canonical Bot Chat — its name is its "
+                        "identity, and renaming it would orphan the conversation. "
+                        "To start fresh, create a new bot instead."
+                    )
+                return 0
             if not is_user and current["title"] is not None:
                 if self._title_rank(current["title_source"]) >= new_rank:
                     return 0
@@ -11556,8 +11752,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return f"{base} #{max_num + 1}"
 
-    def get_compression_tip(self, session_id: str) -> Optional[str]:
-        """Walk the compression-continuation chain forward and return the tip.
+    def get_compression_chain(self, session_id: str) -> List[str]:
+        """Walk the compression-continuation chain forward and return every id.
+
+        Root-first order, ending at the tip; ``[session_id]`` when no
+        continuation exists. ``get_compression_tip`` is this walk's last
+        element — kept as the single implementation so the two can never
+        disagree about what the chain is.
 
         A compression continuation is a child of a session whose
         ``end_reason = 'compression'``.  Older builds tried to distinguish
@@ -11578,6 +11779,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         continuation exists.
         """
         current = session_id
+        chain = [current] if current else []
         seen = {current} if current else set()
         # Bound the walk defensively — compression chains this deep are
         # pathological and shouldn't happen in practice. 100 = plenty.
@@ -11608,13 +11810,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                 row = cursor.fetchone()
             if row is None:
-                return current
+                return chain
             child_id = row["id"]
             if not child_id or child_id in seen:
-                return current
+                return chain
             seen.add(child_id)
             current = child_id
-        return current
+            chain.append(child_id)
+        return chain
+
+    def get_compression_tip(self, session_id: str) -> Optional[str]:
+        """The live tip of a compression-continuation chain (see
+        ``get_compression_chain`` for the walk's semantics). Returns the input
+        id when no continuation exists."""
+        chain = self.get_compression_chain(session_id)
+        return chain[-1] if chain else session_id
 
     # Columns excluded from compact_rows projections: only the payload-heavy
     # blob no list consumer renders. Everything else — including gateway
@@ -11992,12 +12202,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # call per compression root. Batch that half instead: resolve
             # every tip id first, then fetch all tip rows in a single query.
             tip_ids_by_root: Dict[str, str] = {}
+            chain_by_root: Dict[str, List[str]] = {}
             for s in sessions:
                 if s.get("end_reason") != "compression":
                     continue
-                tip_id = self.get_compression_tip(s["id"])
+                chain = self.get_compression_chain(s["id"])
+                tip_id = chain[-1] if chain else s["id"]
                 if tip_id != s["id"]:
                     tip_ids_by_root[s["id"]] = tip_id
+                    chain_by_root[s["id"]] = chain
 
             tip_rows = (
                 self._get_session_rich_rows_batch(
@@ -12025,6 +12238,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     if key in tip_row:
                         merged[key] = tip_row[key]
                 merged["_lineage_root_id"] = s["id"]
+                # Every id on the chain, intermediates included. Root and tip
+                # alone are not enough client-side: a persisted tile or route
+                # can hold a MIDDLE segment's id (it was the tip when opened,
+                # then rotated again), and with only the root/tip pair such a
+                # surface can no longer prove it names this conversation —
+                # which is how one chat ends up open twice after compaction.
+                merged["_lineage_ids"] = chain_by_root.get(s["id"]) or None
                 projected.append(merged)
             sessions = projected
 
@@ -15887,12 +16107,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
           v1 — initial shape (no ON DELETE CASCADE on session_id FK)
           v2 — session_id FK gets ON DELETE CASCADE so session pruning
                automatically clears bindings.
+          v3 — ``profile_name`` dimension on both tables so multiplexed
+               gateways (shared ``state.db``) isolate topic mode/bindings
+               per Hermes profile (issue #76423).
         """
-        def _do(conn):
-            conn.executescript(
+        # (table, column list, DDL body). ``profile_name`` leads the primary
+        # key so multiplexed profiles sharing one state.db never collide on a
+        # private chat_id (which is the user id, identical across bots).
+        tables = (
+            (
+                "telegram_dm_topic_mode",
+                "profile_name, chat_id, user_id, enabled, activated_at, updated_at, "
+                "has_topics_enabled, allows_users_to_create_topics, "
+                "capability_checked_at, intro_message_id, pinned_message_id",
                 """
-                CREATE TABLE IF NOT EXISTS telegram_dm_topic_mode (
-                    chat_id TEXT PRIMARY KEY,
+                    profile_name TEXT NOT NULL DEFAULT 'default',
+                    chat_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     activated_at REAL NOT NULL,
@@ -15901,10 +16131,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     allows_users_to_create_topics INTEGER,
                     capability_checked_at REAL,
                     intro_message_id TEXT,
-                    pinned_message_id TEXT
-                );
-
-                CREATE TABLE IF NOT EXISTS telegram_dm_topic_bindings (
+                    pinned_message_id TEXT,
+                    PRIMARY KEY (profile_name, chat_id)
+                """,
+            ),
+            (
+                "telegram_dm_topic_bindings",
+                "profile_name, chat_id, thread_id, user_id, session_key, "
+                "session_id, managed_mode, linked_at, updated_at",
+                """
+                    profile_name TEXT NOT NULL DEFAULT 'default',
                     chat_id TEXT NOT NULL,
                     thread_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
@@ -15913,65 +16149,50 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     managed_mode TEXT NOT NULL DEFAULT 'auto',
                     linked_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    PRIMARY KEY (chat_id, thread_id)
-                );
+                    PRIMARY KEY (profile_name, chat_id, thread_id)
+                """,
+            ),
+        )
 
+        def _do(conn):
+            for table, columns, ddl in tables:
+                # Fresh installs get the v3 shape immediately.
+                conn.execute(f"CREATE TABLE IF NOT EXISTS {table} ({ddl})")
+                have = {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
+                if "profile_name" in have:
+                    continue
+                # Pre-profile shape (v1 or v2) → v3. SQLite can't ALTER a
+                # primary key (or a foreign key), so rebuild; this also
+                # supplies the v2 ON DELETE CASCADE for v1 bindings tables.
+                # Legacy rows land in the "default" namespace only — never
+                # replicated across profiles.
+                legacy_columns = columns.replace("profile_name, ", "", 1)
+                conn.executescript(
+                    f"""
+                    CREATE TABLE {table}_new ({ddl});
+                    INSERT INTO {table}_new ({columns})
+                        SELECT 'default', {legacy_columns} FROM {table};
+                    DROP TABLE {table};
+                    ALTER TABLE {table}_new RENAME TO {table};
+                    """
+                )
+
+            # Indexes after any rebuild so they always target the v3 shape
+            # (a legacy table lacking profile_name can't take the user index).
+            conn.executescript(
+                """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session
                 ON telegram_dm_topic_bindings(session_id);
 
                 CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user
-                ON telegram_dm_topic_bindings(user_id, chat_id);
+                ON telegram_dm_topic_bindings(profile_name, user_id, chat_id);
                 """
             )
-
-            # v1 → v2: rebuild telegram_dm_topic_bindings if its session_id FK
-            # lacks ON DELETE CASCADE. SQLite can't ALTER a foreign key, so we
-            # rebuild the table. Only runs once per DB (version gate).
-            current = conn.execute(
-                "SELECT value FROM state_meta WHERE key = ?",
-                ("telegram_dm_topic_schema_version",),
-            ).fetchone()
-            current_version = int(current[0]) if current and str(current[0]).isdigit() else 0
-            if current_version < 2:
-                fk_rows = conn.execute(
-                    "PRAGMA foreign_key_list('telegram_dm_topic_bindings')"
-                ).fetchall()
-                needs_rebuild = any(
-                    row[2] == "sessions" and (row[6] or "") != "CASCADE"
-                    for row in fk_rows
-                )
-                if needs_rebuild:
-                    conn.executescript(
-                        """
-                        CREATE TABLE telegram_dm_topic_bindings_new (
-                            chat_id TEXT NOT NULL,
-                            thread_id TEXT NOT NULL,
-                            user_id TEXT NOT NULL,
-                            session_key TEXT NOT NULL,
-                            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                            managed_mode TEXT NOT NULL DEFAULT 'auto',
-                            linked_at REAL NOT NULL,
-                            updated_at REAL NOT NULL,
-                            PRIMARY KEY (chat_id, thread_id)
-                        );
-                        INSERT INTO telegram_dm_topic_bindings_new
-                            SELECT chat_id, thread_id, user_id, session_key,
-                                   session_id, managed_mode, linked_at, updated_at
-                            FROM telegram_dm_topic_bindings;
-                        DROP TABLE telegram_dm_topic_bindings;
-                        ALTER TABLE telegram_dm_topic_bindings_new
-                            RENAME TO telegram_dm_topic_bindings;
-                        CREATE UNIQUE INDEX idx_telegram_dm_topic_bindings_session
-                            ON telegram_dm_topic_bindings(session_id);
-                        CREATE INDEX idx_telegram_dm_topic_bindings_user
-                            ON telegram_dm_topic_bindings(user_id, chat_id);
-                        """
-                    )
 
             conn.execute(
                 "INSERT INTO state_meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                ("telegram_dm_topic_schema_version", "2"),
+                ("telegram_dm_topic_schema_version", "3"),
             )
         self._execute_write(_do)
 
@@ -15980,6 +16201,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         *,
         chat_id: str,
         user_id: str,
+        profile_name: str = "default",
         has_topics_enabled: Optional[bool] = None,
         allows_users_to_create_topics: Optional[bool] = None,
     ) -> None:
@@ -15987,9 +16209,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         This method intentionally owns the explicit topic migration. Ordinary
         SessionDB startup must not create these side tables.
+
+        ``profile_name`` namespaces rows under a shared multiplex ``state.db``
+        (issue #76423). Callers handling a multiplexed event must pass the
+        routed profile from ``source.profile``, not the process-global active
+        profile.
         """
         self.apply_telegram_topic_migration()
         now = time.time()
+        profile_name = _normalize_telegram_topic_profile_name(profile_name)
 
         def _to_int(value: Optional[bool]) -> Optional[int]:
             if value is None:
@@ -16000,11 +16228,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             conn.execute(
                 """
                 INSERT INTO telegram_dm_topic_mode (
-                    chat_id, user_id, enabled, activated_at, updated_at,
+                    profile_name, chat_id, user_id, enabled, activated_at, updated_at,
                     has_topics_enabled, allows_users_to_create_topics,
                     capability_checked_at
-                ) VALUES (?, ?, 1, ?, ?, ?, ?, ?)
-                ON CONFLICT(chat_id) DO UPDATE SET
+                ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile_name, chat_id) DO UPDATE SET
                     user_id = excluded.user_id,
                     enabled = 1,
                     updated_at = excluded.updated_at,
@@ -16013,6 +16241,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     capability_checked_at = excluded.capability_checked_at
                 """,
                 (
+                    profile_name,
                     str(chat_id),
                     str(user_id),
                     now,
@@ -16028,6 +16257,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         *,
         chat_id: str,
+        profile_name: str = "default",
         clear_bindings: bool = True,
     ) -> None:
         """Disable Telegram DM topic mode for one private chat.
@@ -16040,33 +16270,43 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Never creates the topic-mode tables from scratch; if they don't
         exist there is nothing to disable and the call is a no-op.
         """
+        profile_name = _normalize_telegram_topic_profile_name(profile_name)
+
         def _do(conn):
             try:
                 conn.execute(
                     "UPDATE telegram_dm_topic_mode SET enabled = 0, updated_at = ? "
-                    "WHERE chat_id = ?",
-                    (time.time(), str(chat_id)),
+                    "WHERE profile_name = ? AND chat_id = ?",
+                    (time.time(), profile_name, str(chat_id)),
                 )
                 if clear_bindings:
                     conn.execute(
-                        "DELETE FROM telegram_dm_topic_bindings WHERE chat_id = ?",
-                        (str(chat_id),),
+                        "DELETE FROM telegram_dm_topic_bindings "
+                        "WHERE profile_name = ? AND chat_id = ?",
+                        (profile_name, str(chat_id)),
                     )
             except sqlite3.OperationalError:
                 # Tables don't exist yet — nothing to disable.
                 return
         self._execute_write(_do)
 
-    def is_telegram_topic_mode_enabled(self, *, chat_id: str, user_id: str) -> bool:
+    def is_telegram_topic_mode_enabled(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        profile_name: str = "default",
+    ) -> bool:
         """Return whether Telegram DM topic mode is enabled for this chat/user."""
+        profile_name = _normalize_telegram_topic_profile_name(profile_name)
         with self._read_ctx() as conn:
             try:
                 row = conn.execute(
                     """
                     SELECT enabled FROM telegram_dm_topic_mode
-                    WHERE chat_id = ? AND user_id = ?
+                    WHERE profile_name = ? AND chat_id = ? AND user_id = ?
                     """,
-                    (str(chat_id), str(user_id)),
+                    (profile_name, str(chat_id), str(user_id)),
                 ).fetchone()
             except sqlite3.OperationalError:
                 return False
@@ -16080,16 +16320,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         *,
         chat_id: str,
         thread_id: str,
+        profile_name: str = "default",
     ) -> Optional[Dict[str, Any]]:
         """Return the session binding for a Telegram DM topic, if present."""
+        profile_name = _normalize_telegram_topic_profile_name(profile_name)
         with self._read_ctx() as conn:
             try:
                 row = conn.execute(
                     """
                     SELECT * FROM telegram_dm_topic_bindings
-                    WHERE chat_id = ? AND thread_id = ?
+                    WHERE profile_name = ? AND chat_id = ? AND thread_id = ?
                     """,
-                    (str(chat_id), str(thread_id)),
+                    (profile_name, str(chat_id), str(thread_id)),
                 ).fetchone()
             except sqlite3.OperationalError:
                 return None
@@ -16099,18 +16341,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         *,
         chat_id: str,
+        profile_name: str = "default",
     ) -> List[Dict[str, Any]]:
         """All Telegram DM topic bindings for one chat, newest first.
 
         Read-only; returns [] if the bindings table doesn't exist yet
         (does not trigger the topic-mode migration).
         """
+        profile_name = _normalize_telegram_topic_profile_name(profile_name)
         with self._read_ctx() as conn:
             try:
                 rows = conn.execute(
                     "SELECT * FROM telegram_dm_topic_bindings "
-                    "WHERE chat_id = ? ORDER BY updated_at DESC",
-                    (str(chat_id),),
+                    "WHERE profile_name = ? AND chat_id = ? "
+                    "ORDER BY updated_at DESC",
+                    (profile_name, str(chat_id)),
                 ).fetchall()
             except sqlite3.OperationalError:
                 return []
@@ -16145,6 +16390,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         *,
         chat_id: str,
         thread_id: str,
+        profile_name: str = "default",
     ) -> int:
         """Remove the binding row for a single (chat, thread) pair.
 
@@ -16175,6 +16421,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         chat_id = str(chat_id)
         thread_id = str(thread_id)
+        profile_name = _normalize_telegram_topic_profile_name(profile_name)
         deleted = {"count": 0}
 
         def _do(conn):
@@ -16182,9 +16429,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 cursor = conn.execute(
                     """
                     DELETE FROM telegram_dm_topic_bindings
-                    WHERE chat_id = ? AND thread_id = ?
+                    WHERE profile_name = ? AND chat_id = ? AND thread_id = ?
                     """,
-                    (chat_id, thread_id),
+                    (profile_name, chat_id, thread_id),
                 )
                 deleted["count"] = cursor.rowcount or 0
             except sqlite3.OperationalError:
@@ -16200,15 +16447,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 remaining = conn.execute(
                     """
                     SELECT 1 FROM telegram_dm_topic_bindings
-                    WHERE chat_id = ? LIMIT 1
+                    WHERE profile_name = ? AND chat_id = ? LIMIT 1
                     """,
-                    (chat_id,),
+                    (profile_name, chat_id),
                 ).fetchone()
                 if remaining is None:
                     conn.execute(
                         "UPDATE telegram_dm_topic_mode "
-                        "SET enabled = 0, updated_at = ? WHERE chat_id = ?",
-                        (time.time(), chat_id),
+                        "SET enabled = 0, updated_at = ? "
+                        "WHERE profile_name = ? AND chat_id = ?",
+                        (time.time(), profile_name, chat_id),
                     )
             except sqlite3.OperationalError:
                 # telegram_dm_topic_mode absent — binding prune still stands.
@@ -16226,6 +16474,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_key: str,
         session_id: str,
         managed_mode: str = "auto",
+        profile_name: str = "default",
     ) -> None:
         """Bind one Telegram DM topic thread to one Hermes session.
 
@@ -16240,28 +16489,38 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         user_id = str(user_id)
         session_key = str(session_key)
         session_id = str(session_id)
+        profile_name = _normalize_telegram_topic_profile_name(profile_name)
 
         def _do(conn):
             existing_session = conn.execute(
                 """
-                SELECT chat_id, thread_id FROM telegram_dm_topic_bindings
+                SELECT profile_name, chat_id, thread_id
+                FROM telegram_dm_topic_bindings
                 WHERE session_id = ?
                 """,
                 (session_id,),
             ).fetchone()
             if existing_session is not None:
-                linked_chat = existing_session["chat_id"] if isinstance(existing_session, sqlite3.Row) else existing_session[0]
-                linked_thread = existing_session["thread_id"] if isinstance(existing_session, sqlite3.Row) else existing_session[1]
-                if str(linked_chat) != chat_id or str(linked_thread) != thread_id:
+                if isinstance(existing_session, sqlite3.Row):
+                    linked_profile = existing_session["profile_name"]
+                    linked_chat = existing_session["chat_id"]
+                    linked_thread = existing_session["thread_id"]
+                else:
+                    linked_profile, linked_chat, linked_thread = existing_session
+                if (
+                    str(linked_profile) != profile_name
+                    or str(linked_chat) != chat_id
+                    or str(linked_thread) != thread_id
+                ):
                     raise ValueError("session is already linked to another Telegram topic")
 
             conn.execute(
                 """
                 INSERT INTO telegram_dm_topic_bindings (
-                    chat_id, thread_id, user_id, session_key, session_id,
+                    profile_name, chat_id, thread_id, user_id, session_key, session_id,
                     managed_mode, linked_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(chat_id, thread_id) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile_name, chat_id, thread_id) DO UPDATE SET
                     user_id = excluded.user_id,
                     session_key = excluded.session_key,
                     session_id = excluded.session_id,
@@ -16269,6 +16528,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     updated_at = excluded.updated_at
                 """,
                 (
+                    profile_name,
                     chat_id,
                     thread_id,
                     user_id,
@@ -16308,6 +16568,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         *,
         chat_id: str,
         user_id: str,
+        profile_name: str = "default",
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
         """List previous Telegram sessions for this user that are not bound to a topic.
@@ -16316,7 +16577,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         topic-mode tables are absent, fall back to a simpler query that
         just returns this user's Telegram sessions — there can't be any
         bindings yet.
+
+        Scoped by ``profile_name`` so multiplexed profiles do not surface
+        each other's unlinked sessions (issue #76423).
         """
+        profile_name = _normalize_telegram_topic_profile_name(profile_name)
+        # sessions.profile_name is NULL/empty for legacy rows → treat as default.
+        profile_clause = "AND COALESCE(NULLIF(TRIM(s.profile_name), ''), 'default') = ?"
         with self._read_ctx() as conn:
             try:
                 rows = conn.execute(
@@ -16338,6 +16605,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                       ON sp.hash = s.system_prompt_hash
                     WHERE s.source = 'telegram'
                       AND s.user_id = ?
+                      {profile_clause}
                       AND NOT EXISTS (
                           SELECT 1 FROM telegram_dm_topic_bindings b
                           WHERE b.session_id = s.id
@@ -16345,7 +16613,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     ORDER BY last_active DESC, s.started_at DESC
                     LIMIT ?
                     """,
-                    (str(user_id), int(limit)),
+                    (str(user_id), profile_name, int(limit)),
                 ).fetchall()
             except sqlite3.OperationalError:
                 # telegram_dm_topic_bindings doesn't exist yet — no bindings
@@ -16469,6 +16737,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except Exception as exc:
                 logger.debug("WAL checkpoint (TRUNCATE) after VACUUM failed: %s", exc)
+            # TRUNCATE may replace the WAL inode; adopt the post-VACUUM
+            # sidecars so the write-path generation guard does not halt a
+            # healthy exclusive maintenance connection.
+            self._record_db_file_identity()
         return optimized
 
     def maybe_auto_prune_and_vacuum(

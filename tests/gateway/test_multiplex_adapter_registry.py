@@ -1,6 +1,7 @@
 """Phase 3: secondary-profile adapter registry + same-token conflict detection."""
 import logging
 import asyncio
+import types
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -39,6 +40,50 @@ class TestCredentialFingerprint:
         assert fp1 is not None
         assert "shared-project-secret" not in fp1
 
+    def test_reads_feishu_app_id(self):
+        """Feishu/Lark authenticates via app_id/app_secret, not a token.
+
+        Without _app_id in the fingerprint attribute list, every Feishu
+        adapter in a multiplexed gateway returns None here and the
+        same-credential conflict check is silently skipped — N profiles
+        spawn WebSocket clients against the same app, which evict each
+        other in a 1000 bye loop until all go offline.
+        """
+        class _FeishuAdapter:
+            def __init__(self):
+                self._app_id = "cli_a1b2c3"
+                self._app_secret = "top-secret"
+
+        fp1 = GatewayRunner._adapter_credential_fingerprint(_FeishuAdapter())
+        fp2 = GatewayRunner._adapter_credential_fingerprint(_FeishuAdapter())
+
+        assert fp1 is not None
+        assert fp1 == fp2  # same app -> same fingerprint -> conflict detected
+        assert "cli_a1b2c3" not in fp1  # log-safe, never the raw credential
+
+    def test_distinct_feishu_app_ids_distinct_fp(self):
+        class _FeishuAdapter:
+            def __init__(self, app_id):
+                self._app_id = app_id
+                self._app_secret = "s"
+
+        fp_a = GatewayRunner._adapter_credential_fingerprint(_FeishuAdapter("app-A"))
+        fp_b = GatewayRunner._adapter_credential_fingerprint(_FeishuAdapter("app-B"))
+
+        assert fp_a is not None and fp_b is not None
+        assert fp_a != fp_b
+
+    @pytest.mark.parametrize("attr", ["_client_id", "_bot_id"])
+    def test_reads_app_style_ids_teams_wecom(self, attr):
+        """Teams (_client_id) and WeCom (_bot_id) are the same class as Feishu:
+        id/secret pairs, no token — cloned profiles must collide."""
+        a = types.SimpleNamespace(**{attr: "app-1"})
+        b = types.SimpleNamespace(**{attr: "app-1"})
+        c = types.SimpleNamespace(**{attr: "app-2"})
+        fp = GatewayRunner._adapter_credential_fingerprint
+        assert fp(a) is not None and fp(a) == fp(b)
+        assert fp(a) != fp(c)
+        assert "app-1" not in fp(a)
 
     def test_reads_config_token(self):
         """Adapters like Discord store token on `config`, not on self.
@@ -897,3 +942,78 @@ class TestFeishuPortBindingConditional:
         assert connected == 0  # no error, just nothing connected
 
 
+class TestSecondarySkipsCredentiallessPlatforms:
+    """#84079 — multiplex must not build adapters for platforms a profile
+    has no credential for.
+
+    The shared config.yaml enables a platform once; under multiplex every
+    secondary profile reloads it inside its own secret scope, so a profile
+    whose scope lacks the platform credential resolves ``enabled=True`` with
+    an empty token. Constructing an adapter anyway treats every profile as
+    configured for the platform — one inbound message fans out across all of
+    them. These tests lock the credential gate on the secondary startup path
+    (the primary path got the same gate in #64674; the reconnect path shares
+    the helper). Also reported independently in #72313.
+    """
+
+    def _make_runner(self, monkeypatch, profile_cfg):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner.adapters = {}
+        created = []
+
+        def fake_create(platform, platform_config):
+            created.append((platform, platform_config))
+            return _FakeAdapter(token=platform_config.token or None)
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
+        monkeypatch.setattr(runner, "_create_adapter", fake_create)
+        monkeypatch.setattr(runner, "_configure_profile_adapter", lambda *a, **k: None)
+        monkeypatch.setattr(
+            runner,
+            "_connect_initial_adapter_with_timeout",
+            AsyncMock(return_value=True),
+        )
+        return runner, created
+
+    @pytest.mark.asyncio
+    async def test_credentialless_platform_builds_no_adapter(self, monkeypatch, tmp_path):
+        """Enabled-in-YAML but no credential in the profile scope -> no adapter."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        profile_cfg = GatewayConfig(multiplex_profiles=True)
+        profile_cfg.platforms = {
+            # Shared config.yaml enables Slack; profile-b's .env has no
+            # SLACK_BOT_TOKEN, so its scoped load resolves token="" but
+            # keeps enabled=True (#84079).
+            Platform.SLACK: PlatformConfig(enabled=True, token=""),
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="telegram-token-b"),
+        }
+        runner, created = self._make_runner(monkeypatch, profile_cfg)
+
+        connected = await runner._start_one_profile_adapters("profile-b", tmp_path, {})
+
+        # Only Telegram (which profile-b has its own credential for) gets an
+        # adapter; Slack is skipped instead of fanning out a turn per profile.
+        assert [p for p, _ in created] == [Platform.TELEGRAM]
+        assert connected == 1
+        assert Platform.TELEGRAM in runner._profile_adapters["profile-b"]
+        assert Platform.SLACK not in runner._profile_adapters["profile-b"]
+
+    @pytest.mark.asyncio
+    async def test_profile_with_own_credential_still_connects(self, monkeypatch, tmp_path):
+        """A profile that defines its own credential keeps its adapter."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        profile_cfg = GatewayConfig(multiplex_profiles=True)
+        profile_cfg.platforms = {
+            Platform.SLACK: PlatformConfig(enabled=True, token="slack-token-b"),
+        }
+        runner, created = self._make_runner(monkeypatch, profile_cfg)
+
+        connected = await runner._start_one_profile_adapters("profile-b", tmp_path, {})
+
+        assert connected == 1
+        assert created == [(Platform.SLACK, profile_cfg.platforms[Platform.SLACK])]
+        assert Platform.SLACK in runner._profile_adapters["profile-b"]
