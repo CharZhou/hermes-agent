@@ -157,6 +157,31 @@ class ProfileRoute:
         return True
 
 
+def _coerce_route_id(value: Any) -> Optional[str]:
+    """Normalize a route discriminator to str for strict equality matching.
+
+    PyYAML loads unquoted numeric IDs (Discord snowflakes, Telegram negative
+    chat ids) as ``int``. Inbound ``SessionSource`` fields are always ``str``
+    via ``build_source``, so leaving ints here makes ``matches()`` fail silently.
+
+    Only ``int`` is coerced (the legitimate YAML-numeric case). ``bool`` is an
+    ``int`` subclass but never a valid id; floats and other types stringify to
+    something (``"123.0"``) that can never equal an inbound id — recreating the
+    silent no-match this exists to fix — so they are passed through with a
+    load-time warning instead of being silently "fixed" (#86470).
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    logger.warning(
+        "Profile route discriminator %r (type %s) can never match an inbound "
+        "id — quote it in config.yaml (e.g. chat_id: \"%s\").",
+        value, type(value).__name__, value,
+    )
+    return str(value)
+
+
 def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRoute]:
     """Parse profile_routes from config.yaml into ProfileRoute objects.
 
@@ -194,9 +219,9 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
                 name=name,
                 platform=platform,
                 profile=profile,
-                guild_id=entry.get("guild_id"),
-                chat_id=entry.get("chat_id"),
-                thread_id=entry.get("thread_id"),
+                guild_id=_coerce_route_id(entry.get("guild_id")),
+                chat_id=_coerce_route_id(entry.get("chat_id")),
+                thread_id=_coerce_route_id(entry.get("thread_id")),
                 enabled=entry.get("enabled", True),
             )
         )

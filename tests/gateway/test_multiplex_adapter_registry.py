@@ -1,6 +1,8 @@
 """Phase 3: secondary-profile adapter registry + same-token conflict detection."""
 import logging
 import asyncio
+import threading
+import time
 import types
 from contextlib import contextmanager
 from pathlib import Path
@@ -227,11 +229,15 @@ def _secondary_recovery_runner(*, running=True):
     return runner
 
 
-def _install_secondary_reconnect_context(monkeypatch, runner, adapter, scoped_homes=None):
+def _install_secondary_reconnect_context(
+    monkeypatch, runner, adapter, scoped_homes=None, hydration_flags=None
+):
     @contextmanager
-    def fake_scope(profile_home):
+    def fake_scope(profile_home, *, hydrate_secrets=True):
         if scoped_homes is not None:
             scoped_homes.append(Path(profile_home))
+        if hydration_flags is not None:
+            hydration_flags.append(hydrate_secrets)
         yield
 
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
@@ -253,6 +259,93 @@ def _install_secondary_reconnect_context(monkeypatch, runner, adapter, scoped_ho
 
 
 class TestSecondaryProfileFatalRecovery:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("entry", ["startup", "reconnect"])
+    async def test_secondary_hydrates_secrets_off_the_event_loop(self, monkeypatch, entry):
+        """#99519 class: both secondary entry points (initial start + reconnect)
+        hydrate external secret sources in a worker thread, exactly once, and
+        enter the runtime scope with hydration disabled."""
+        runner = _secondary_recovery_runner()
+        replacement = _SecondaryRecoveryAdapter()
+        hydration_flags = []
+        _install_secondary_reconnect_context(
+            monkeypatch, runner, replacement, hydration_flags=hydration_flags
+        )
+        loop_thread_id = threading.get_ident()
+        hydration_started = threading.Event()
+        hydration_finished = threading.Event()
+        hydration_thread_ids = []
+        stop_ticker = asyncio.Event()
+        ticks_during_hydration = 0
+
+        def slow_hydrate(profile_home):
+            hydration_thread_ids.append(threading.get_ident())
+            hydration_started.set()
+            time.sleep(0.05)
+            hydration_finished.set()
+
+        async def ticker():
+            nonlocal ticks_during_hydration
+            while not stop_ticker.is_set():
+                if hydration_started.is_set() and not hydration_finished.is_set():
+                    ticks_during_hydration += 1
+                await asyncio.sleep(0)
+
+        async def connect(adapter, platform, **_kwargs):
+            assert adapter is replacement
+            assert platform is Platform.DISCORD
+            return True
+
+        monkeypatch.setattr(
+            "hermes_cli.env_loader.hydrate_profile_secret_sources", slow_hydrate
+        )
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
+        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+        monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        if entry == "startup":
+            coro = runner._start_one_profile_adapters(
+                "reviewer", Path("/profiles/reviewer"), {}
+            )
+        else:
+            coro = runner._run_secondary_profile_reconnect("reviewer", Platform.DISCORD)
+        ticker_task = asyncio.create_task(ticker())
+        work = asyncio.create_task(coro)
+        try:
+            assert await asyncio.to_thread(hydration_started.wait, 1.0)
+            await work
+        finally:
+            stop_ticker.set()
+            await ticker_task
+
+        assert len(hydration_thread_ids) == 1
+        assert hydration_thread_ids[0] != loop_thread_id
+        assert ticks_during_hydration > 0
+        assert hydration_flags and set(hydration_flags) == {False}
+        assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+
+    @pytest.mark.asyncio
+    async def test_secondary_initial_connect_syncs_voice_mode_state(self, monkeypatch):
+        """#84872: a secondary bot gets its persisted /voice state at INITIAL
+        connect, not only on reconnect."""
+        runner = _secondary_recovery_runner()
+        adapter = _SecondaryRecoveryAdapter()
+        _install_secondary_reconnect_context(monkeypatch, runner, adapter)
+        synced = []
+        runner._sync_voice_mode_state_to_adapter = synced.append
+        monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda h: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+        monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+
+        async def connect(a, platform):
+            return True
+
+        monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
+        assert await runner._start_one_profile_adapters("reviewer", Path("/profiles/reviewer"), {}) == 1
+        assert synced == [adapter]
+
     @pytest.mark.asyncio
     async def test_retryable_secondary_fatal_reconnects_with_its_profile_scope(
         self, monkeypatch
@@ -386,13 +479,15 @@ class TestSecondaryStartupFailureRecovery:
         # gateway is already running) to the regular reconnect task, which
         # publishes the replacement and clears its own slot.
         await asyncio.wait_for(bridge[0], timeout=0.5)
-        for _ in range(20):
-            if (
-                runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
-                is replacement
-            ):
-                break
-            await asyncio.sleep(0)
+        # The reconnect runner hops to a worker thread for secret hydration,
+        # so wait on a deadline rather than a fixed number of loop turns.
+        deadline = time.monotonic() + 1.0
+        while (
+            runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
+            is not replacement
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.005)
         assert (
             runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
         )
@@ -439,13 +534,15 @@ class TestSecondaryStartupFailureRecovery:
         bridge = list(runner._background_tasks)
         assert len(bridge) == 1
         await asyncio.wait_for(bridge[0], timeout=0.5)
-        for _ in range(20):
-            if (
-                runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
-                is replacement
-            ):
-                break
-            await asyncio.sleep(0)
+        # The reconnect runner hops to a worker thread for secret hydration,
+        # so wait on a deadline rather than a fixed number of loop turns.
+        deadline = time.monotonic() + 1.0
+        while (
+            runner._profile_adapters.get("reviewer", {}).get(Platform.DISCORD)
+            is not replacement
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.005)
         assert (
             runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
         )
@@ -913,6 +1010,113 @@ class TestSecondaryProfileConfigHandling:
         assert failed.disconnected is True
         assert second == 1
         assert runner._profile_adapters["later"][photon] is later
+
+    @pytest.mark.asyncio
+    async def test_secondary_teams_uses_degradable_error(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.run import SecondaryPortBindingConfigError
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {
+            Platform("teams"): PlatformConfig(enabled=True, extra={"port": 3978}),
+        }
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: reviewer_cfg
+        )
+
+        with pytest.raises(SecondaryPortBindingConfigError) as exc_info:
+            await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
+        assert "teams" in str(exc_info.value)
+        assert "reviewer" in str(exc_info.value)
+        assert "reviewer" not in runner._profile_adapters
+
+    @pytest.mark.asyncio
+    async def test_secondary_profile_adapter_start_skips_whatsapp(self, monkeypatch):
+        """WhatsApp is shared process-level ingress like Relay: the bridge is
+        one authenticated session tied to a single phone number, so a
+        credential-less secondary profile must be skipped (not stall startup
+        in a connect/retry loop) while its other platforms start normally."""
+        runner = _secondary_recovery_runner()
+        direct = _SecondaryRecoveryAdapter()
+        _install_secondary_reconnect_context(monkeypatch, runner, direct)
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: GatewayConfig(
+                multiplex_profiles=True,
+                platforms={
+                    Platform.WHATSAPP: PlatformConfig(enabled=True),
+                    Platform.DISCORD: PlatformConfig(enabled=True, token="profile-token"),
+                },
+            ),
+        )
+        factory_calls = []
+
+        def _create_adapter(platform, config):
+            factory_calls.append(platform)
+            return direct
+
+        async def _connect(adapter, platform):
+            return True
+
+        monkeypatch.setattr(runner, "_create_adapter", _create_adapter)
+        monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", _connect)
+
+        connected = await runner._start_one_profile_adapters("clientbot", "/tmp/x", {})
+
+        assert connected == 1
+        assert factory_calls == [Platform.DISCORD]
+        assert runner._profile_adapters["clientbot"] == {Platform.DISCORD: direct}
+
+
+class TestSecondaryProfileHookRegistration:
+    """A secondary profile's own `hooks:` block must register on ITS
+    plugin manager, not just the root/default profile's (#92672).
+
+    Startup only calls agent.shell_hooks/outbound_webhooks
+    register_from_config() once, against the root config, before any
+    profile scope exists. Without a matching call inside
+    _start_one_profile_adapters, a secondary profile's config.yaml
+    `hooks:` block (shell hooks and outbound webhooks) never registers.
+    """
+
+    @pytest.mark.asyncio
+    async def test_registers_shell_hooks_and_webhooks_for_secondary_profile(
+        self, monkeypatch
+    ):
+        runner = _secondary_recovery_runner()
+        config = GatewayConfig(multiplex_profiles=True, platforms={})
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+
+        profile_cfg = {
+            "hooks": {
+                "pre_tool_call": [
+                    {"matcher": "write_file", "command": "~/.hermes/deny.sh"}
+                ],
+                "outbound": [
+                    {"url": "http://127.0.0.1:9000/hook", "events": ["on_session_end"]}
+                ],
+            }
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: profile_cfg)
+
+        seen = []
+        monkeypatch.setattr(
+            "agent.shell_hooks.register_from_config",
+            lambda cfg, **kwargs: seen.append(("shell", cfg)) or [],
+        )
+        monkeypatch.setattr(
+            "agent.outbound_webhooks.register_from_config",
+            lambda cfg: seen.append(("webhook", cfg)) or [],
+        )
+
+        await runner._start_one_profile_adapters("second", "/tmp/second", {})
+
+        assert ("shell", profile_cfg) in seen
+        assert ("webhook", profile_cfg) in seen
 
 
 class TestFeishuPortBindingConditional:

@@ -2834,6 +2834,22 @@ class GatewaySlashCommandsMixin:
             if not gate_arg or gate_lower == "list":
                 return mgr.render_gates()
             if gate_lower.startswith("add "):
+                # SECURITY: a gate is persisted and later executed with
+                # shell=True at every goal turn boundary (run_gate), with no
+                # approval prompt. Letting an allowed but non-admin gateway
+                # sender choose that string is authenticated RCE under the
+                # Hermes process account — and with no admin list configured
+                # (the backward-compatible default) every allowed sender is
+                # treated as unrestricted. Gate ONLY this shell-creating
+                # operation behind a real, explicitly-configured admin (the
+                # same fail-closed check that guards cross-origin /resume);
+                # list/remove/clear stay open so a non-admin can still recover.
+                if not self._resume_caller_is_admin(event.source):
+                    return (
+                        "⛔ /goal gate add requires an explicitly configured "
+                        "gateway admin (allow_admin_from for DMs, "
+                        "group_allow_admin_from for groups)."
+                    )
                 command = gate_arg[len("add"):].strip()
                 try:
                     gate = mgr.add_gate(command)
@@ -3347,10 +3363,12 @@ class GatewaySlashCommandsMixin:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
-        platform = event.source.platform
-        voice_key = self._voice_key(platform, chat_id)
+        # Voice state belongs to the (bot, chat) pair: resolve the adapter that
+        # received the command and key the mode by its owning profile so two
+        # multiplexed bots in one chat keep independent /voice state (#75198).
+        voice_key = self._voice_key_for_source(event.source)
 
-        adapter = self.adapters.get(platform)
+        adapter = self._adapter_for_source(event.source)
 
         if args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"
@@ -3382,7 +3400,6 @@ class GatewaySlashCommandsMixin:
                 "all": t("gateway.voice.label_all"),
             }
             # Append voice channel info if connected
-            adapter = self.adapters.get(event.source.platform)
             guild_id = self._get_guild_id(event)
             if guild_id and hasattr(adapter, "get_voice_channel_info"):
                 info = adapter.get_voice_channel_info(guild_id)
