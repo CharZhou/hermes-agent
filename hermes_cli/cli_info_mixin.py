@@ -170,15 +170,16 @@ class CLIInfoMixin:
                 self._show_tool_availability_warnings()
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        from agent.model_metadata import resolve_minimum_context_length
+        minimum_context = resolve_minimum_context_length(getattr(self.agent, "minimum_context_length", None))
         self._show_plugin_compat_notice()
-        if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
+        if ctx_len and ctx_len < minimum_context:
             self._console_print()
             self._console_print(
                 f"[yellow]⚠️  Context length is only {ctx_len:,} tokens — "
                 f"this is likely too low for agent use with tools.[/]")
             self._console_print(
-                f"[dim]   Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens. Tool schemas + system prompt use a large fixed prefix.[/]"
+                f"[dim]   Hermes needs at least {minimum_context:,} tokens. Tool schemas + system prompt use a large fixed prefix.[/]"
             )
             base_url = getattr(self, "base_url", "") or ""
             from urllib.parse import urlparse as _urlparse
@@ -187,7 +188,7 @@ class CLIInfoMixin:
             except ValueError:
                 _port = None
             if _port == 11434 or "ollama" in base_url_hostname(base_url):
-                fix = f"Ollama fix: OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT_LENGTH} ollama serve"
+                fix = f"Ollama fix: OLLAMA_CONTEXT_LENGTH={minimum_context} ollama serve"
             elif _port == 1234:
                 fix = "LM Studio fix: Set context length in model settings → reload model"
             else:

@@ -302,10 +302,10 @@ def settle_unrecovered_error(
                 return _verdict("continue")
         # Announce the fallback only when a chain exists, else "trying fallback..." lies
         # before a silent abort.
-        if agent._has_pending_fallback():
+        if classified.should_fallback and agent._has_pending_fallback():
             _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
             agent._buffer_status(f"⚠️ {_label} — trying fallback...")
-        if agent._try_activate_fallback():
+        if classified.should_fallback and agent._try_activate_fallback():
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.
             active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
