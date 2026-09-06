@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.delivery_metadata import delivery_metadata_for_event
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
 
@@ -265,7 +266,7 @@ class GatewayNotificationsMixin:
             # paths in an already-streamed reply are text the user has seen (or stale inspected content),
             # not an attachment request.
             adapter.extract_images(cleaned)
-            _thread_meta = (
+            _thread_meta = delivery_metadata_for_event(event,
                 dict(thread_metadata)
                 if thread_metadata is not None
                 else self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
@@ -319,9 +320,11 @@ class GatewayNotificationsMixin:
                     and not getattr(stream_consumer, "_turn_split_delivery", False)
                 ):
                     try:
-                        _edit_res = await adapter.edit_message(
-                            chat_id=source.chat_id, message_id=_sc_msg_id, content=text_content, finalize=True,
-                        )
+                        from agent.interrupt_compat import _accepts_keyword
+                        kwargs = dict(chat_id=source.chat_id, message_id=_sc_msg_id, content=text_content, finalize=True)
+                        if metadata and _accepts_keyword(adapter.edit_message, "metadata"):
+                            kwargs["metadata"] = metadata
+                        _edit_res = await adapter.edit_message(**kwargs)
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
                             logger.info(

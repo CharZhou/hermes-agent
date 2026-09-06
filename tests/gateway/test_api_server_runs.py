@@ -250,15 +250,11 @@ class TestStartRun:
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("gateway_session_key", "expected_session_key"),
-        [("scope-A", "scope-A"), (None, "conversation-A")],
-    )
+    @pytest.mark.parametrize("gateway_session_key", ["scope-A", None])
     async def test_start_binds_independent_run_session_and_approval_context(
         self,
         auth_adapter,
         gateway_session_key,
-        expected_session_key,
     ):
         from gateway.session_context import clear_session_vars, get_session_env
         from tools.approval import get_current_session_key
@@ -335,7 +331,7 @@ class TestStartRun:
         assert captured == {
             "run_id": data["run_id"],
             "session_id": "conversation-A",
-            "session_key": expected_session_key,
+            "session_key": data["run_id"],
             "platform": "api_server",
             "approval_key": data["run_id"],
             "task_id": "conversation-A",

@@ -21,6 +21,7 @@ from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent
+from gateway.platforms.delivery_metadata import delivery_metadata_for_event, merge_delivery_metadata
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -232,7 +233,9 @@ class GatewayTurnMixin:
 
     def _event_thread_metadata(self, event, source):
         """Thread metadata for a send that replies to ``event`` on ``source``."""
-        return self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        return delivery_metadata_for_event(
+            event, self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        )
 
     @staticmethod
     def _pop_post_delivery_callback(adapter, key, generation):
@@ -1964,6 +1967,7 @@ class GatewayTurnMixin:
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 message_type=event.message_type,
+                delivery_metadata=delivery_metadata_for_event(event),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -2422,6 +2426,7 @@ class GatewayTurnMixin:
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
         source: "SessionSource", session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
+        delivery_metadata: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
@@ -2478,7 +2483,9 @@ class GatewayTurnMixin:
             headers["X-Hermes-Session-Id"] = session_id
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
 
-        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        _thread_metadata = merge_delivery_metadata(
+            delivery_metadata, self._thread_metadata_for_source(source, event_message_id)
+        )
         _stream_consumer = self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
         stream_task = asyncio.create_task(_stream_consumer.run()) if _stream_consumer else None
 
@@ -3431,6 +3438,7 @@ class GatewayTurnMixin:
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
         next_message_id = next_channel_prompt = next_message_type = None
+        next_delivery_metadata = None
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3457,6 +3465,7 @@ class GatewayTurnMixin:
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
             next_message_type = getattr(pending_event, "message_type", None)
+            next_delivery_metadata = delivery_metadata_for_event(pending_event)
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.
@@ -3492,6 +3501,7 @@ class GatewayTurnMixin:
             run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
             event_message_id=next_message_id, channel_prompt=next_channel_prompt,
             message_type=next_message_type,
+            delivery_metadata=next_delivery_metadata,
         )
         return _preserve_queued_followup_history_offset(result, followup_result)
 
@@ -3541,15 +3551,17 @@ class GatewayTurnMixin:
                     logger.debug("background turn task failed during cleanup", exc_info=True)
 
     async def _run_agent_edit_streamed_message(
-        self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc,
+        self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc, metadata=None,
     ) -> None:
         """Edit the stream consumer's message in place with ``content``; on success mark
         ``response["already_sent"]`` and log ``ok``. ``fail_result`` (None = trust the call) logs a
         returned failure as ``(session, error)``; ``fail_exc`` logs an exception as ``(session, exc)``."""
         try:
-            _res = await _sc.adapter.edit_message(
-                chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True,
-            )
+            from agent.interrupt_compat import _accepts_keyword
+            kwargs = dict(chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True)
+            if metadata and _accepts_keyword(_sc.adapter.edit_message, "metadata"):
+                kwargs["metadata"] = metadata
+            _res = await _sc.adapter.edit_message(**kwargs)
         except Exception as _edit_err:
             logger.warning(fail_exc, _sk, _edit_err)
             return
@@ -3616,6 +3628,7 @@ class GatewayTurnMixin:
             elif _sc_msg_id and _sc_msg_id != "__no_edit__" and getattr(_sc, "adapter", None) is not None:
                 await self._run_agent_edit_streamed_message(
                     _sc, source, response, _final, _sk=_sk,
+                    metadata=turn_ctx._status_thread_metadata,
                     ok=("Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).", _sk, _sc_msg_id),
                     fail_result="Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
                     fail_exc="Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
@@ -3630,6 +3643,7 @@ class GatewayTurnMixin:
             if _sc.message_id:
                 await self._run_agent_edit_streamed_message(
                     _sc, source, response, response["final_response"], _sk=_sk,
+                    metadata=turn_ctx._status_thread_metadata,
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result=None, fail_exc="Failed to edit streamed message for session %s: %s",
                 )
@@ -3699,6 +3713,10 @@ class GatewayTurnMixin:
         turn_ctx._status_callback_sync = turn_runner._status_callback_sync
         turn_ctx._status_adapter = self._adapter_for_source(source)
         turn_ctx._status_chat_id = source.chat_id
+        turn_ctx._progress_metadata = merge_delivery_metadata(
+            turn_ctx.delivery_metadata, turn_ctx._progress_metadata
+        )
+        _status_thread_metadata = merge_delivery_metadata(turn_ctx.delivery_metadata, _status_thread_metadata)
         turn_ctx._status_thread_metadata = _status_thread_metadata
         return _status_thread_metadata
 
@@ -3779,6 +3797,7 @@ class GatewayTurnMixin:
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
+        delivery_metadata: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -3788,6 +3807,7 @@ class GatewayTurnMixin:
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
                 event_message_id=event_message_id,
+                delivery_metadata=delivery_metadata,
             )
 
         from run_agent import AIAgent
@@ -3798,6 +3818,7 @@ class GatewayTurnMixin:
             run_generation=run_generation, context_prompt=context_prompt, history=history,
             session_id=session_id, _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id, inbound_message_id=inbound_message_id,
+            delivery_metadata=merge_delivery_metadata(delivery_metadata),
             channel_prompt=channel_prompt, moa_config=moa_config,
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,

@@ -1013,6 +1013,27 @@ class TestLoadGatewayConfig:
             "bridged into PlatformConfig.extra by the shared-key loop"
         )
 
+    def test_shared_key_bridge_uses_merged_platform_precedence(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    feishu:\n"
+            "      require_mention: true\n"
+            "      group_policy: disabled\n"
+            "      channel_prompts: {room: nested}\n"
+            "platforms:\n"
+            "  feishu:\n"
+            "    require_mention: false\n"
+            "    group_policy: open\n"
+            "    channel_prompts: {room: selected}\n",
+            encoding="utf-8",
+        )
+        extra = load_gateway_config().platforms[Platform.FEISHU].extra
+        assert extra["require_mention"] is False
+        assert extra["group_policy"] == "open"
+        assert extra["channel_prompts"] == {"room": "selected"}
+
 
     def test_bridges_unauthorized_dm_behavior_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

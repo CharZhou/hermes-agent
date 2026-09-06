@@ -152,7 +152,7 @@ def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path
 
 def test_openai_edit_uses_configured_client_overrides(monkeypatch, tmp_path):
     from plugins.image_gen.openai import OpenAIImageGenProvider
-    import plugins.image_gen.openai as openai_provider
+    from plugins.image_gen import _common
 
     client_kwargs = []
     generate_calls = []
@@ -189,7 +189,7 @@ def test_openai_edit_uses_configured_client_overrides(monkeypatch, tmp_path):
         },
     )
     monkeypatch.setattr(
-        openai_provider,
+        _common,
         "save_b64_image",
         lambda b64, prefix: tmp_path / f"{prefix}.png",
     )

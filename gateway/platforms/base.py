@@ -20,6 +20,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
+from gateway.platforms.delivery_metadata import delivery_metadata_for_event
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,9 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
 
 def _thread_metadata_for_event(event) -> dict | None:
     """``_thread_metadata_for_source`` for an event, anchored on its reply id."""
-    return _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+    return delivery_metadata_for_event(
+        event, _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+    )
 
 
 def _mark_notify_metadata(metadata: dict | None) -> dict:

@@ -10,12 +10,15 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, _delivery_metadata_for_event
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.delivery_metadata import delivery_metadata_for_event
 from gateway.session import SessionSource
 from plugins.platforms.feishu.adapter import (
-    _FEISHU_MENTION_REGISTRY_TTL_SECONDS,
     FeishuAdapter,
     FeishuMentionRef,
+)
+from plugins.platforms.feishu.adapter_mentions import (
+    _FEISHU_MENTION_REGISTRY_TTL_SECONDS,
     _build_mention_targets,
 )
 
@@ -40,27 +43,28 @@ def test_registry_suppresses_cross_event_name_conflicts() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         adapter = _adapter(Path(tmp))
 
-        with patch("plugins.platforms.feishu.adapter.time.time", return_value=100.0):
+        with patch("plugins.platforms.feishu.adapter_mentions.time.time", return_value=100.0):
             adapter._update_mention_registry("oc_chat", {"Alex": {"ou_one"}})
-        with patch("plugins.platforms.feishu.adapter.time.time", return_value=101.0):
+        with patch("plugins.platforms.feishu.adapter_mentions.time.time", return_value=101.0):
             adapter._update_mention_registry("oc_chat", {"Alex": {"ou_two"}})
             assert adapter._mention_targets_for_chat("oc_chat") == {}
+            assert _adapter(Path(tmp))._mention_targets_for_chat("oc_chat") == {}
 
 
 def test_registry_conflict_recovers_when_stale_observation_expires() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         adapter = _adapter(Path(tmp))
 
-        with patch("plugins.platforms.feishu.adapter.time.time", return_value=100.0):
+        with patch("plugins.platforms.feishu.adapter_mentions.time.time", return_value=100.0):
             adapter._update_mention_registry("oc_chat", {"Alex": {"ou_old"}})
         with patch(
-            "plugins.platforms.feishu.adapter.time.time",
+            "plugins.platforms.feishu.adapter_mentions.time.time",
             return_value=100.0 + (_FEISHU_MENTION_REGISTRY_TTL_SECONDS / 2),
         ):
             adapter._update_mention_registry("oc_chat", {"Alex": {"ou_new"}})
             assert adapter._mention_targets_for_chat("oc_chat") == {}
         with patch(
-            "plugins.platforms.feishu.adapter.time.time",
+            "plugins.platforms.feishu.adapter_mentions.time.time",
             return_value=101.0 + _FEISHU_MENTION_REGISTRY_TTL_SECONDS,
         ):
             assert adapter._mention_targets_for_chat("oc_chat") == {"Alex": "ou_new"}
@@ -86,16 +90,16 @@ def test_legacy_registry_observation_expires_after_migration(legacy_entry) -> No
             ),
             encoding="utf-8",
         )
-        with patch("plugins.platforms.feishu.adapter.time.time", return_value=100.0):
+        with patch("plugins.platforms.feishu.adapter_mentions.time.time", return_value=100.0):
             adapter = _adapter(home)
         with patch(
-            "plugins.platforms.feishu.adapter.time.time",
+            "plugins.platforms.feishu.adapter_mentions.time.time",
             return_value=100.0 + (_FEISHU_MENTION_REGISTRY_TTL_SECONDS / 2),
         ):
             adapter._update_mention_registry("oc_chat", {"Alex": {"ou_new"}})
             assert adapter._mention_targets_for_chat("oc_chat") == {}
         with patch(
-            "plugins.platforms.feishu.adapter.time.time",
+            "plugins.platforms.feishu.adapter_mentions.time.time",
             return_value=101.0 + _FEISHU_MENTION_REGISTRY_TTL_SECONDS,
         ):
             assert adapter._mention_targets_for_chat("oc_chat") == {"Alex": "ou_new"}
@@ -105,14 +109,14 @@ def test_same_event_conflict_expires_and_later_unique_observation_recovers() -> 
     with tempfile.TemporaryDirectory() as tmp:
         adapter = _adapter(Path(tmp))
 
-        with patch("plugins.platforms.feishu.adapter.time.time", return_value=100.0):
+        with patch("plugins.platforms.feishu.adapter_mentions.time.time", return_value=100.0):
             adapter._update_mention_registry(
                 "oc_chat",
                 {"Alex": {"ou_one", "ou_two"}},
             )
             assert adapter._mention_targets_for_chat("oc_chat") == {}
         with patch(
-            "plugins.platforms.feishu.adapter.time.time",
+            "plugins.platforms.feishu.adapter_mentions.time.time",
             return_value=101.0 + _FEISHU_MENTION_REGISTRY_TTL_SECONDS,
         ):
             adapter._update_mention_registry("oc_chat", {"Alex": {"ou_three"}})
@@ -255,7 +259,7 @@ def test_delivery_metadata_cannot_override_reserved_route_keys() -> None:
         },
     )
 
-    assert _delivery_metadata_for_event(
+    assert delivery_metadata_for_event(
         event,
         {"thread_id": "omt_core", "reply_to_message_id": "om_core"},
     ) == {
@@ -286,7 +290,7 @@ def test_core_metadata_wins_without_relying_on_reserved_key_list() -> None:
         "future_core_route": "core",
     }
 
-    assert _delivery_metadata_for_event(event, core_metadata) == {
+    assert delivery_metadata_for_event(event, core_metadata) == {
         **core_metadata,
         "feishu_mention_targets": {"Alex": "ou_alex"},
     }
@@ -318,6 +322,6 @@ def test_delivery_metadata_strips_routing_keys_when_core_metadata_is_absent() ->
         }
     )
 
-    assert _delivery_metadata_for_event(event) == {
+    assert delivery_metadata_for_event(event) == {
         "feishu_mention_targets": {"Alex": "ou_alex"},
     }

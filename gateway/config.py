@@ -164,6 +164,13 @@ def _coerce_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def normalize_reply_to_mode(value: Any, default: str = "first") -> str:
+    """YAML parses an unquoted off as False; preserve that flat-reply setting."""
+    if value is False:
+        return "off"
+    return (str(value).strip().lower() or default) if value is not None else default
+
+
 def _normalize_choice(value: Any, choices: set, default: str) -> str:
     """Lower-cased *value* when it is one of *choices*, else *default*."""
     normalized = value.strip().lower() if isinstance(value, str) else None
@@ -435,7 +442,9 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=HomeChannel.from_dict(home) if isinstance(home, dict) else None,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_to_mode=normalize_reply_to_mode(
+                data.get("reply_to_mode") if "reply_to_mode" in data else extra.get("reply_to_mode")
+            ),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
             typing_status_text=toplevel_or_extra("typing_status_text"),  # string passthrough, no coercion

@@ -467,9 +467,10 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
     # Must be the LAST step (after sanitization); idempotent if called twice.
     try:
         from tools.tool_search import assemble_tool_defs, load_config as _load_ts_config
-        ts_cfg = _load_ts_config()
+        context_length = _resolve_active_context_length()
+        ts_cfg = _load_ts_config(small_context_mode=_uses_small_context_tool_mode(context_length))
         if not skip_tool_search_assembly and ts_cfg.enabled != "off":
-            assembly = assemble_tool_defs(filtered_tools, context_length=_resolve_active_context_length(), config=ts_cfg)
+            assembly = assemble_tool_defs(filtered_tools, context_length=context_length, config=ts_cfg)
             if assembly.activated and not quiet_mode:
                 print(f"🔎 Tool Search (tier {assembly.tier}): {assembly.deferred_count} "
                       f"MCP/plugin tools deferred (~{assembly.deferred_tokens} tokens) behind "
@@ -492,6 +493,21 @@ def _active_model_config() -> Tuple[str, Dict[str, Any]]:
         from hermes_cli.config import split_model_config_default
         raw_model_id, _ = split_model_config_default(raw_model_id)
     return str(raw_model_id).strip(), model_cfg
+
+
+def _uses_small_context_tool_mode(context_length: int) -> bool:
+    """Keep the opt-in 32K runtime within its smaller tool-schema budget."""
+    from agent.model_metadata import (
+        MINIMUM_CONTEXT_LENGTH, SMALL_CONTEXT_MINIMUM_LENGTH, resolve_minimum_context_length,
+    )
+    if not isinstance(context_length, int) or not 0 < context_length < MINIMUM_CONTEXT_LENGTH:
+        return False
+    try:
+        _, model_cfg = _active_model_config()
+        return resolve_minimum_context_length(model_cfg.get("minimum_context_length")) == SMALL_CONTEXT_MINIMUM_LENGTH
+    except Exception as exc:
+        logger.debug("Could not resolve small-context tool mode: %s", exc)
+        return False
 
 
 def _resolve_active_context_length() -> int:
@@ -755,7 +771,7 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
                   *, user_task: Optional[str], enabled_tools: Optional[List[str]], skip_tool_execution_middleware: bool) -> Any:
     """Run the registry handler (through tool-execution middleware unless skipped)
     with the approval observability context bound for the duration."""
-    dispatch_kwargs: Dict[str, Any] = {"task_id": ids.task_id, "session_id": ids.session_id}
+    dispatch_kwargs: Dict[str, Any] = asdict(ids)
     if function_name == "execute_code":
         # Prefer the caller's list so subagents can't overwrite the parent's
         # tool set via the process-global.

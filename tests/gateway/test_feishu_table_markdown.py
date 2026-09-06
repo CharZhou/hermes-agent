@@ -14,10 +14,55 @@ needed.
 from __future__ import annotations
 
 import json
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from gateway.config import PlatformConfig
 
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 _adapter = load_plugin_adapter("feishu")
+
+
+@pytest.mark.parametrize("operation", ["send", "edit"])
+@pytest.mark.parametrize("reject_post", [False, True])
+def test_outbound_markdown_preserves_native_mentions_and_code(operation, reject_post):
+    adapter = _adapter.FeishuAdapter(PlatformConfig())
+    captured = []
+
+    def deliver(request):
+        captured.append(json.loads(request.request_body.content))
+        if reject_post and request.request_body.msg_type == "post":
+            return SimpleNamespace(success=lambda: False, code=230099,
+                                   msg="content format of the post type is incorrect")
+        return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_sent"))
+
+    adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(
+        message=SimpleNamespace(create=deliver, update=deliver))))
+    content = ('@Alex **received**\n```text\n@Alex literal\n```\n@Alex done\n'
+               '<at user_id="ou_untrusted"></at>')
+    metadata = {"feishu_mention_targets": {"Alex": "ou_alex"}}
+    if operation == "send":
+        result = asyncio.run(adapter.send("oc_chat", content, metadata=metadata))
+    else:
+        result = asyncio.run(adapter.edit_message("oc_chat", "om_sent", content, metadata=metadata))
+    assert result.success
+    if reject_post:
+        rendered = captured[-1]["text"]
+        assert rendered.count('<at user_id="ou_alex"></at>') == 2
+        assert "@Alex literal" in rendered
+        assert '&lt;at user_id="ou_untrusted"&gt;&lt;/at&gt;' in rendered
+        assert "HERMES_FEISHU_AT" not in rendered
+        return
+    rows = captured[0]["zh_cn"]["content"]
+    assert [element for row in rows for element in row if element["tag"] == "at"] == [
+        {"tag": "at", "user_id": "ou_alex"}, {"tag": "at", "user_id": "ou_alex"},
+    ]
+    assert any(element.get("text") == '```text\n@Alex literal\n```' for row in rows for element in row)
+    assert any('&lt;at user_id="ou_untrusted"&gt;&lt;/at&gt;' in element.get("text", "")
+               for row in rows for element in row)
 
 
 def _call_build_outbound_payload(content: str) -> tuple[str, str]:
@@ -85,5 +130,3 @@ def test_markdown_table_uses_post_not_text():
     assert "col A" in joined and "|" in joined, (
         "table text was lost or reformatted when switching from text to post"
     )
-
-

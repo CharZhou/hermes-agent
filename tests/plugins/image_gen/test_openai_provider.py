@@ -133,6 +133,49 @@ class TestSourceImageLoading:
 
 
 class TestGenerate:
+    @pytest.mark.parametrize("key_field", ["key_env", "api_key_env"])
+    @pytest.mark.parametrize("editing", [False, True])
+    def test_custom_endpoint_uses_only_active_profile_key(
+        self, monkeypatch, tmp_path, key_field, editing
+    ):
+        import yaml
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+        monkeypatch.setenv("CUSTOM_IMAGE_KEY", "other-profile-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "global-key")
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "image_gen": {"openai": {
+                "base_url": " https://proxy.example/v1/ ",
+                key_field: "CUSTOM_IMAGE_KEY",
+            }},
+        }))
+        client = MagicMock()
+        client.images.generate.return_value = client.images.edit.return_value = _fake_response(b64=_b64_png())
+        sdk = MagicMock()
+        sdk.OpenAI.return_value = client
+        provider = openai_plugin.OpenAIImageGenProvider()
+        kwargs = {"image_url": f"data:image/png;base64,{_b64_png()}"} if editing else {}
+        with patch.dict("sys.modules", {"openai": sdk}):
+            token = set_secret_scope({"CUSTOM_IMAGE_KEY": " profile-key "})
+            try:
+                assert provider.is_available()
+                assert provider.generate("update image", **kwargs)["success"]
+            finally:
+                reset_secret_scope(token)
+            assert sdk.OpenAI.call_args.kwargs == {
+                "api_key": "profile-key", "base_url": "https://proxy.example/v1",
+            }
+            assert (client.images.edit if editing else client.images.generate).call_count == 1
+            sdk.OpenAI.reset_mock()
+            token = set_secret_scope({})
+            try:
+                assert not provider.is_available()
+                assert provider.generate("update image", **kwargs)["error_type"] == "auth_required"
+            finally:
+                reset_secret_scope(token)
+            sdk.OpenAI.assert_not_called()
+
     def test_empty_prompt_rejected(self, provider):
         result = provider.generate("", aspect_ratio="square")
         assert result["success"] is False

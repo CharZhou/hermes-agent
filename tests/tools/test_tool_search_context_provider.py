@@ -12,6 +12,8 @@ generic direct-API metadata.
 
 from unittest.mock import patch
 
+import pytest
+
 
 def _model_cfg(**overrides):
     cfg = {
@@ -25,15 +27,36 @@ def _model_cfg(**overrides):
 
 class TestResolveActiveContextLengthProviderAware:
 
-    def test_32k_policy_enables_small_context_tool_mode(self):
+    @pytest.mark.parametrize("context_length, uses_bridge", [(32_000, True), (64_000, False)])
+    def test_32k_policy_reaches_model_visible_tools(self, tmp_path, monkeypatch, context_length, uses_bridge):
         import model_tools
+        import yaml
+        from tools.registry import registry
 
-        with patch(
-            "hermes_cli.config.load_config",
-            return_value={"model": {"minimum_context_length": 32_000}},
-        ):
-            assert model_tools._uses_small_context_tool_mode(32_768)
-            assert not model_tools._uses_small_context_tool_mode(64_000)
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "model": {"default": "test-model", "context_length": context_length,
+                      "minimum_context_length": 32_000},
+            "tools": {"tool_search": False},
+        }), encoding="utf-8")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_path)
+        name = "mcp_small_context_probe"
+        registry.register(
+            name=name, toolset="mcp-small-context-probe",
+            schema={"name": name, "description": "Inspect a fixture",
+                    "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kwargs: "{}",
+        )
+        try:
+            definitions = model_tools.get_tool_definitions(
+                enabled_toolsets=["mcp-small-context-probe"], quiet_mode=True,
+            )
+            names = {tool["function"]["name"] for tool in definitions}
+            assert (name not in names) is uses_bridge
+            assert {"tool_search", "tool_describe", "tool_call"}.issubset(names) is uses_bridge
+        finally:
+            registry.deregister(name)
+            model_tools._clear_tool_defs_cache()
 
     def test_passes_provider_base_url_and_key_from_runtime(self):
         """Resolved runtime credentials must reach get_model_context_length."""

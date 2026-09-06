@@ -29,7 +29,7 @@ def _stop_reason(result):
     (camelCase survives only as the serialization alias, which pydantic does
     not expose to attribute access).
     """
-    from tools.mcp_tool import mcp_field
+    from tools.mcp_tool_common import mcp_field
 
     return mcp_field(result, "stop_reason", "stopReason")
 
@@ -586,7 +586,7 @@ class TestToolHandler:
             _servers.pop("test_srv", None)
 
     def test_context_builder_omits_empty_and_non_string_values(self):
-        from tools.mcp_tool import _build_hermes_context_meta
+        from tools.mcp_tool_context import _build_hermes_context_meta
 
         assert _build_hermes_context_meta(
             run_id="run-A",
@@ -604,7 +604,10 @@ class TestToolHandler:
 
     def test_opted_in_handler_passes_context_meta_separate_from_arguments(self):
         from gateway.session_context import clear_session_vars, set_session_vars
-        from tools.mcp_tool import _make_tool_handler, _servers
+        import model_tools
+        from tools.registry import ToolRegistry
+        from tools.mcp_tool_handlers import _make_tool_handler
+        from tools.mcp_tool import _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -621,10 +624,17 @@ class TestToolHandler:
 
         try:
             handler = _make_tool_handler("test_srv", "greet", 120)
+            registry = ToolRegistry()
+            schema = {"name": "mcp_test_srv_greet", "description": "Greet", "parameters": {
+                "type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"],
+            }}
+            registry.register("mcp_test_srv_greet", "mcp_test_srv", schema, handler)
+            schema_before = json.dumps(registry.get_schema("mcp_test_srv_greet"), sort_keys=True)
             arguments = {"name": "world"}
-            with self._patch_mcp_loop():
+            with self._patch_mcp_loop(), patch.object(model_tools, "registry", registry):
                 result = json.loads(
-                    handler(
+                    model_tools.handle_function_call(
+                        "mcp_test_srv_greet",
                         arguments,
                         task_id="task-A",
                         session_id="session-A",
@@ -636,6 +646,7 @@ class TestToolHandler:
 
             assert result["result"] == "ok"
             assert arguments == {"name": "world"}
+            assert json.dumps(registry.get_schema("mcp_test_srv_greet"), sort_keys=True) == schema_before
             mock_session.call_tool.assert_called_once_with(
                 "greet",
                 arguments={"name": "world"},
@@ -659,11 +670,13 @@ class TestToolHandler:
 
     def test_concurrent_context_snapshots_survive_context_free_loop_hop(self):
         from gateway.session_context import clear_session_vars, set_session_vars
-        from tools.mcp_tool import _make_tool_handler, _servers
+        from tools.mcp_tool_handlers import _make_tool_handler
+        from tools.mcp_tool import _servers
 
         barrier = threading.Barrier(2)
         calls = []
         calls_lock = threading.Lock()
+        loop_lock = threading.Lock()
 
         async def call_tool(name, **kwargs):
             with calls_lock:
@@ -680,7 +693,10 @@ class TestToolHandler:
         def run_without_caller_context(coro_or_factory, timeout=30):
             barrier.wait(timeout=5)
             coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
-            return contextvars.Context().run(asyncio.run, coro)
+            # One MCP loop serializes this server's RPC lock. Independent caller
+            # loops would share an asyncio.Lock across threads, which is invalid.
+            with loop_lock:
+                return contextvars.Context().run(asyncio.run, coro)
 
         def invoke(suffix):
             tokens = set_session_vars(
@@ -699,7 +715,7 @@ class TestToolHandler:
         try:
             with (
                 patch(
-                    "tools.mcp_tool._run_on_mcp_loop",
+                    "tools.mcp_tool_loop._run_on_mcp_loop",
                     side_effect=run_without_caller_context,
                 ),
                 ThreadPoolExecutor(max_workers=2) as executor,
@@ -733,13 +749,52 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_context_snapshot_is_reused_after_recovery(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _servers
+        from tools.mcp_tool_handlers import _make_tool_handler
+
+        session = SimpleNamespace(call_tool=AsyncMock(side_effect=[
+            RuntimeError("retryable transport failure"), _make_call_result("ok"),
+        ]))
+        server = _make_mock_server("test_srv", session=session)
+        server._config = {"forward_hermes_context": True}
+        _servers["test_srv"] = server
+        tokens = set_session_vars(run_id="run-A", session_id="session-A")
+
+        def recover(_server_name, _exc, retry_call, _op):
+            set_session_vars(run_id="run-B", session_id="session-B")
+            return retry_call()
+
+        def context_free_loop(factory, timeout=30):
+            return contextvars.Context().run(asyncio.run, factory())
+
+        try:
+            with (
+                patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=context_free_loop),
+                patch("tools.mcp_tool_handlers._handle_stdio_child_exited_and_retry", side_effect=recover),
+            ):
+                result = json.loads(_make_tool_handler("test_srv", "greet", 120)(
+                    {"name": "world"}, tool_call_id="call-A"))
+            assert result["result"] == "ok"
+            assert session.call_tool.call_count == 2
+            for call in session.call_tool.call_args_list:
+                assert call.kwargs == {
+                    "arguments": {"name": "world"},
+                    "meta": {"io.nous.hermes/context": {
+                        "version": "1", "run_id": "run-A",
+                        "session_id": "session-A", "tool_call_id": "call-A",
+                    }},
+                }
+        finally:
+            clear_session_vars(tokens)
+            _servers.pop("test_srv", None)
+
     def test_context_forwarding_does_not_change_mcp_tool_schema(self):
         from gateway.session_context import clear_session_vars, set_session_vars
-        from tools.mcp_tool import (
-            _convert_mcp_schema,
-            _make_tool_handler,
-            _servers,
-        )
+        from tools.mcp_tool_schema import _convert_mcp_schema
+        from tools.mcp_tool_handlers import _make_tool_handler
+        from tools.mcp_tool import _servers
 
         tool = _make_mcp_tool(name="greet")
         schema_before = json.dumps(

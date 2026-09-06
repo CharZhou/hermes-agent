@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from gateway.config import Platform, _dict_slot, _normalize_choice
+from gateway.config import Platform, _dict_slot, _normalize_choice, normalize_reply_to_mode
 
 # Logger name parity with the origin module: records stay under "gateway.config".
 logger = logging.getLogger("gateway.config")
@@ -261,6 +261,8 @@ def bridge_platform_shared_keys(
         if plat == Platform.LOCAL:
             continue
         platform_cfg, cfg_toplevel = platform_section(yaml_cfg, plat.value, gateway_platforms)
+        if not cfg_toplevel:
+            platform_cfg = platforms_data.get(plat.value)
         if not isinstance(platform_cfg, dict):
             continue
         bridged = _bridged_keys(plat, platform_cfg, gw_data)
@@ -274,10 +276,13 @@ def bridge_platform_shared_keys(
                 if isinstance(ov_data, dict)
             }
         enabled_was_explicit = cfg_toplevel and "enabled" in platform_cfg
-        if not bridged and not enabled_was_explicit and not has_channel_overrides:
+        has_reply_to_mode = "reply_to_mode" in platform_cfg
+        if not bridged and not enabled_was_explicit and not has_channel_overrides and not has_reply_to_mode:
             continue
         plat_data = _dict_slot(platforms_data, plat.value)
         extra = _dict_slot(plat_data, "extra")
+        if has_reply_to_mode:
+            plat_data["reply_to_mode"] = normalize_reply_to_mode(platform_cfg["reply_to_mode"])
         if enabled_was_explicit:
             plat_data["enabled"] = platform_cfg["enabled"]
             extra["_enabled_explicit"] = True

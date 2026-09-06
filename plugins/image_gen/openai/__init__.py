@@ -9,8 +9,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.secret_scope import get_secret
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, success_response
+from plugins.image_gen.openai.endpoint import credential_error, resolve_endpoint
 from plugins.image_gen._common import (
     GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
     StaticImageGenProvider, collect_source_images, error_factory, import_openai, materialize_image,
@@ -70,7 +70,7 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         key="OPENAI_API_KEY", prompt="OpenAI API key", url="https://platform.openai.com/api-keys")
 
     def is_available(self) -> bool:
-        return bool(get_secret("OPENAI_API_KEY")) and openai_importable()
+        return bool(resolve_endpoint()[1]) and openai_importable()
 
     def capabilities(self) -> Dict[str, Any]:
         # images.edit() accepts up to 16 source images.
@@ -85,12 +85,10 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
             return prompt_required_error("openai", aspect)
-        api_key = get_secret("OPENAI_API_KEY")
+        base_url, api_key = resolve_endpoint()
         if not api_key:
             return error_factory("openai", aspect)(
-                "OPENAI_API_KEY not set. Run `hermes tools` → Image "
-                "Generation → OpenAI to configure, or `hermes setup` "
-                "to add the key.",
+                credential_error(base_url),
                 "auth_required")
 
         openai, err = import_openai("openai", aspect)
@@ -101,7 +99,10 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         sources = collect_source_images(image_url, reference_image_urls, limit=16)
         is_edit = bool(sources)
         fail = error_factory("openai", aspect, model=tier_id, prompt=prompt)
-        client = openai.OpenAI(api_key=api_key)
+        client_kwargs: Dict[str, Any] = {"api_key": api_key}
+        if base_url is not None:
+            client_kwargs["base_url"] = base_url
+        client = openai.OpenAI(**client_kwargs)
 
         # gpt-image-2 returns b64_json unconditionally and REJECTS
         # ``response_format`` as an unknown parameter. Don't send it.

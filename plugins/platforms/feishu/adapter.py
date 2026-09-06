@@ -90,6 +90,13 @@ from gateway.platforms.base import (
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
+from plugins.platforms.feishu.adapter_mentions import (
+    FeishuMentionMixin,
+    _build_markdown_post_row,
+    _build_mention_targets,
+    _render_plain_text_payload_content,
+)
+from plugins.platforms.feishu.adapter_reply import FeishuReplyMixin, normalize_reply_to_mode
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
@@ -452,7 +459,10 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
         nonlocal current
         segment = "\n".join(current)
         if segment.strip():
-            rows.append([{"tag": "md", "text": segment}])
+            if _MARKDOWN_FENCE_OPEN_RE.match(segment.strip().splitlines()[0]):
+                rows.append([{"tag": "md", "text": segment}])
+            else:
+                rows.append(_build_markdown_post_row(segment))
         current = []
 
     for raw_line in content.splitlines():
@@ -1192,7 +1202,7 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
     return builder.build()
 
 
-class FeishuAdapter(BasePlatformAdapter):
+class FeishuAdapter(FeishuMentionMixin, FeishuReplyMixin, BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
@@ -1207,6 +1217,7 @@ class FeishuAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.FEISHU)
         self._settings = self._load_settings(config.extra or {})
         self._apply_settings(self._settings)
+        self._reply_to_mode = normalize_reply_to_mode(config.reply_to_mode)
         self._client: Optional[Any] = None
         # Adapter-owned pool for blocking SDK calls, recreated on demand: a torn-down default
         # executor can no longer wedge sends with "Executor shutdown has been called".
@@ -1222,14 +1233,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._seen_message_order: List[str] = []
         self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
         self._dedup_lock = threading.Lock()
-        self._mention_registry_path: Optional[Path] = (
-            get_hermes_home() / _FEISHU_MENTION_REGISTRY_FILENAME
-        )
-        self._mention_registry_lock = threading.Lock()
-        self._mention_registry: Dict[str, Any] = {
-            "version": _FEISHU_MENTION_REGISTRY_VERSION,
-            "chats": {},
-        }
+        self._init_mention_registry()
         # Serializes the offloaded dedup-state flushes so two concurrent
         # inbound messages cannot land their writes out of order.
         self._dedup_persist_lock = asyncio.Lock()
@@ -1570,6 +1574,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
+        formatted = self._compile_outbound_mentions(chat_id, formatted, metadata)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         # Decide markdown-vs-text once for the whole message: a chunk of a long
         # markdown reply may be plain prose that fails the per-chunk regex and would
@@ -1583,7 +1588,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return await self._feishu_send_with_retry(
                 chat_id=chat_id,
                 msg_type="text",
-                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                payload=json.dumps({"text": _strip_markdown_to_plain_text(
+                    _render_plain_text_payload_content(chunk))}, ensure_ascii=False),
                 reply_to=reply_to,
                 metadata=metadata,
             )
@@ -1614,12 +1620,16 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
-    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+    async def edit_message(
+        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
+        content = self._compile_outbound_mentions(chat_id, content, metadata)
 
         async def _update(msg_type: str, payload: str) -> SendResult:
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
@@ -1633,7 +1643,8 @@ class FeishuAdapter(BasePlatformAdapter):
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 result = await _update(
-                    "text", json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
+                    "text", json.dumps({"text": _strip_markdown_to_plain_text(
+                        _render_plain_text_payload_content(content))}, ensure_ascii=False),
                 )
             if result.success:
                 result.message_id = message_id
@@ -2512,17 +2523,23 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
+        chat_id = getattr(message, "chat_id", "") or ""
+        self._update_mention_registry(chat_id, _build_mention_targets(mentions))
+        mention_targets = self._mention_targets_for_chat(chat_id)
+        event_metadata = ({"delivery_metadata": {"feishu_mention_targets": mention_targets}}
+                          if mention_targets else {})
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
         reply_to_message_id = (
             getattr(message, "parent_id", None) or getattr(message, "upper_message_id", None)
             or getattr(message, "root_id", None) or None
         )
+        if self._reply_to_disabled():
+            thread_id = reply_to_message_id = None
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
         sender_primary = (
             getattr(sender_id, "open_id", None) or getattr(sender_id, "user_id", None)
             or getattr(sender_id, "union_id", None) or "<unknown>"
         )
-        chat_id = getattr(message, "chat_id", "") or ""
         logger.info(
             "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d",
             "dm" if chat_type == "p2p" else "group", message_id, inbound_type.value, chat_id,
@@ -2546,6 +2563,7 @@ class FeishuAdapter(BasePlatformAdapter):
             message_id=message_id, media_urls=media_urls, media_types=media_types,
             reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
+            metadata=event_metadata,
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
@@ -3483,7 +3501,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # as ``text``. See #26841.
         if prefer_post or _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
-        return "text", json.dumps({"text": content}, ensure_ascii=False)
+        return "text", json.dumps({"text": _render_plain_text_payload_content(content)}, ensure_ascii=False)
 
     @staticmethod
     def _get_audio_duration_ms(file_path: str) -> int:
@@ -3516,6 +3534,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if not os.path.exists(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
 
+        metadata = self._send_routing_metadata(metadata)
+        reply_to = None if self._reply_to_disabled() else reply_to
         display_name = file_name or os.path.basename(file_path)
         upload_file_type, resolved_message_type = self._resolve_outbound_file_routing(
             file_path=display_name, requested_message_type=outbound_message_type,
@@ -3574,6 +3594,7 @@ class FeishuAdapter(BasePlatformAdapter):
         """Send an uploaded image/file key: as a captioned ``post`` or as a bare key message."""
         if caption:
             msg_type = "post"
+            caption = self._compile_outbound_mentions(chat_id, self.format_message(caption), metadata)
             payload = self._build_media_post_payload(caption=caption, media_tag=media_tag)
         else:
             msg_type = key_msg_type
@@ -3601,6 +3622,8 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _send_raw_message(
         self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        metadata = self._send_routing_metadata(metadata)
+        reply_to = None if self._reply_to_disabled() else reply_to
         thread_id = (metadata or {}).get("thread_id")
         effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
         if effective_reply_to:
@@ -3756,7 +3779,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
     ) -> Any:
         last_error: Optional[Exception] = None
-        active_reply_to = reply_to
+        metadata = self._send_routing_metadata(metadata)
+        active_reply_to = None if self._reply_to_disabled() else reply_to
 
         async def _raw(reply_target: Optional[str]) -> Any:
             return await self._send_raw_message(

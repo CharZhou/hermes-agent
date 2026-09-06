@@ -10,9 +10,12 @@ do not get recycled into the pending-user-message follow-up path.
 """
 
 from types import SimpleNamespace
-import inspect
+from unittest.mock import AsyncMock
+
+import pytest
 
 from gateway.run import GatewayRunner, _is_control_interrupt_message
+from gateway.turn_context import TurnContext
 
 
 def _extract_channel_prompt(pending_event):
@@ -46,14 +49,35 @@ class TestPendingEventNoneChannelPrompt:
         result = _extract_channel_prompt(event)
         assert result == "You are a helpful bot."
 
-    def test_recursive_followup_defaults_delivery_metadata_without_event(self):
-        """The real recursive path must not reference an unbound local."""
-        source = inspect.getsource(GatewayRunner._run_agent_inner)
-        defaults_at = source.find("next_delivery_metadata = None")
-        event_branch_at = source.find("if pending_event is not None:")
-
-        assert defaults_at >= 0
-        assert defaults_at < event_branch_at
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("has_event", [False, True])
+    async def test_recursive_followup_carries_only_its_own_delivery_metadata(self, has_event):
+        source = SimpleNamespace(chat_id="chat")
+        event = SimpleNamespace(
+            source=source, channel_prompt="prompt", message_type="text",
+            metadata={"delivery_metadata": {
+                "feishu_mention_targets": {"Alex": "ou_alex"}, "thread_id": "untrusted",
+            }},
+        ) if has_event else None
+        runner = SimpleNamespace(
+            _MAX_INTERRUPT_DEPTH=5, _adapter_for_source=lambda source: None,
+            _is_goal_continuation_event=lambda event: False,
+            _session_key_for_source=lambda source: "session",
+            _prepare_profile_scoped_inbound_message_text=AsyncMock(return_value="next"),
+            _reply_anchor_for_event=lambda event: "anchor",
+            _refresh_agent_cache_message_count=AsyncMock(),
+            _run_agent=AsyncMock(return_value={"final_response": "done"}),
+        )
+        ctx = TurnContext(source=source, session_key="session", session_id="id", history=[],
+                          delivery_metadata={"feishu_mention_targets": {"Old": "ou_old"}})
+        await GatewayRunner._run_agent_queued_followup(
+            runner, ctx, None, "next", event, {}, {"interrupted": True}, None,
+        )
+        forwarded = runner._run_agent.await_args.kwargs
+        assert forwarded["delivery_metadata"] == (
+            {"feishu_mention_targets": {"Alex": "ou_alex"}} if has_event else None
+        )
+        assert forwarded["channel_prompt"] == ("prompt" if has_event else None)
 
 
 class TestControlInterruptMessages:
@@ -62,4 +86,3 @@ class TestControlInterruptMessages:
     def test_stop_requested_is_not_treated_as_pending_user_message(self):
         result = _extract_pending_text(True, None, "Stop requested")
         assert result is None
-
